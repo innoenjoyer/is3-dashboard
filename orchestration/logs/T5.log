@@ -1,0 +1,857 @@
+kimi version 0.39.1
+• Let me start by reading the brief and docs.
+
+• I'll start by reading the brief and all the authored source material.
+
+• Note: TASKS.md says T4 is TODO but the user says T1-T4 are DONE. Trust user. Now read all the docs.
+
+• Now reading the authored source docs and ADRs.
+
+• Now let me look at the existing frontend components to match the visual language.frontend/src/App.tsx
+frontend/src/components/AppShell.tsx
+frontend/src/components/charts/ChartCard.tsx
+frontend/src/components/charts/ChartSection.tsx
+frontend/src/components/charts/chartUtils.ts
+frontend/src/components/charts/LinePlot.tsx
+frontend/src/components/charts/MetricLine.tsx
+frontend/src/components/charts/Sparkline.tsx
+frontend/src/components/charts/StatusDistribution.tsx
+frontend/src/components/charts/UptimeTimeline.tsx
+frontend/src/components/DeviceCard.tsx
+frontend/src/components/DeviceDrawer.tsx
+frontend/src/components/DeviceGrid.tsx
+frontend/src/components/FilterBar.tsx
+frontend/src/components/FleetPulse.tsx
+frontend/src/components/format.ts
+frontend/src/components/icons.tsx
+frontend/src/components/KpiRow.tsx
+frontend/src/components/QueryPanel.tsx
+frontend/src/components/StatusBadge.tsx
+frontend/src/data/fleet.ts
+frontend/src/data/index.ts
+frontend/src/data/prng.ts
+frontend/src/data/queries.ts
+frontend/src/data/status.ts
+frontend/src/data/types.ts
+frontend/src/data/useLiveFeed.ts
+frontend/src/index.css
+frontend/src/main.tsx
+frontend/src/pages/ArchitecturePage.tsx
+frontend/src/pages/DashboardPage.tsx
+
+
+• Let me look at a few more components to understand conventions — StatusBadge, icons, KpiRow, and check how SVG charts use tokens (chartUtils / LinePlot). Also check package.json scripts.Let me check how charts use token colours in SVG (e.g. LinePlot or FleetPulse) — do they use CSS classes like `fill-series-1` (Tailwind fill utilities with var-based colors) or inline styles with var()? Tailwind colors defined as `var(--x)` work with fill-/stroke- utilities. Let me check FleetPulse quickly for SVG conventions./**
+ * FleetPulse — the signature element (BRIEF §3).
+ *
+ * A full-width dense strip of one thin vertical tick per device:
+ *   tick colour = status, tick height = severity
+ *   (good is a short dim tick on the baseline, warning low, serious mid,
+ *   critical full height, offline a short stub in the offline grey),
+ *   tick opacity = data freshness (a stale reading fades toward the
+ *   surface, never to zero), ordered worst first on the left.
+ *
+ * Rendered as SVG so every tick is a real DOM node. Hovering (or moving the
+ * keyboard cursor with arrow keys) reveals which device a tick is; clicking
+ * (or Enter) opens that device's drawer. A tick that changes status gets a
+ * brief highlight and nothing more — reduced-motion users get the state
+ * change without the animation (index.css neutralises the keyframes).
+ */
+
+import { useEffect, useMemo, useRef, useState } from 'react'
+import {
+  DEVICE_KIND_LABELS,
+  DEVICE_STATUS_LABELS,
+  deriveStatus,
+  latestReading,
+  type Device,
+  type DeviceStatus,
+} from '../data'
+import { relativeAge } from './format'
+import StatusBadge from './StatusBadge'
+
+const HEIGHT = 64
+const TICK_W = 3
+const TICK_GAP = 2
+const PITCH = TICK_W + TICK_GAP
+/**
+ * Tick height carries severity (BRIEF §3): good is a short tick on the
+ * baseline, warning low, serious mid, critical full height; offline is a
+ * distinct short stub, slightly taller than good so the two never read alike.
+ */
+const TICK_HEIGHT: Record<DeviceStatus, number> = {
+  good: 7,
+  offline: 12,
+  warning: 22,
+  serious: 40,
+  critical: HEIGHT,
+}
+/** Worst-first ordering of the strip. */
+const SEVERITY_RANK: Record<DeviceStatus, number> = {
+  critical: 4,
+  serious: 3,
+  warning: 2,
+  offline: 1,
+  good: 0,
+}
+/** A reading 15 minutes old reads as fully stale. */
+const FRESH_WINDOW_SEC = 15 * 60
+/** Fade floor: a stale tick dims toward the surface but never vanishes. */
+const MIN_OPACITY = 0.25
+/** Good ticks stay dim even when fresh — the baseline should read quiet. */
+const GOOD_MIN_OPACITY = 0.2
+const GOOD_MAX_OPACITY = 0.45
+/** Offline ticks are stale by definition; keep them at a fixed mid opacity. */
+const OFFLINE_OPACITY = 0.7
+/** How long a status change stays highlighted, ms. */
+const FLASH_MS = 1500
+
+const FILL_CLASS: Record<DeviceStatus, string> = {
+  good: 'fill-status-good',
+  warning: 'fill-status-warning',
+  serious: 'fill-status-serious',
+  critical: 'fill-status-critical',
+  offline: 'fill-status-offline',
+}
+
+interface TickModel {
+  device: Device
+  status: DeviceStatus
+  /** 0 (stale) – 1 (just reported). */
+  freshness: number
+  lastSeen: number | undefined
+}
+67:  good: 'fill-status-good',
+68:  warning: 'fill-status-warning',
+69:  serious: 'fill-status-serious',
+70:  critical: 'fill-status-critical',
+71:  offline: 'fill-status-offline',
+Good — SVG uses Tailwind classes like `fill-status-good`. Charts use `useContainerWidth` for measuring. I have enough context to design the ArchitecturePage.
+
+  Plan the page structure:
+
+  1. Intro — system name (Is3), three constraints (read-only, stateless device data, no registration).
+  2. Requirements — FR table (13 rows), NFRs grouped by attribute (Performance 2, Scalability 2, Availability 1, Reliability 1, Security 2, Usability 1, Accessibility 1, Maintainability 1, Portability 1, Observability 1, Cost 1). Group by attribute: Performance, Scalability, Availability & Reliability, Security, Usability & Accessibility, Maintainability & Portability, Observability, Cost. Maybe group into clusters: "Speed" (Performance, Scalability), "Trust" (Availability, Reliability, Security), "People" (Usability, Accessibility), "Craft" (Maintainability, Portability, Observability, Cost). Simpler: group NFRs into cards by attribute with the NFR id, requirement, and measurement. Keep table per group or a compact list. Let me use grouped cards with small tables.
+
+  Actually spec says "group them by attribute and let the reader scan". I'll group into a few groups:
+  - Performance: NFR-1, NFR-2
+  - Scalability: NFR-3, NFR-4
+  - Availability & reliability: NFR-5, NFR-6
+  - Security: NFR-7, NFR-8
+  - Usability & accessibility: NFR-9, NFR-10
+  - Engineering: NFR-11, NFR-12, NFR-13, NFR-14
+
+  Each group a card with a table (ID, requirement, measured by). FRs as one table (ID, requirement, priority) with priority badge maybe.
+
+  Also include "Deliberately excluded" list from the doc, and "quality attributes that drive the architecture" — maybe as a short note. Keep it focused.
+
+  3. C4 diagrams — three inline SVG React components:
+  - ContextDiagram (level 1): IoT devices → Is3 platform → technician; sales team → Is3 platform. Note absence of technician→devices arrow.
+  - ContainerDiagram (level 2): Device Gateway (MQTT) → Ingest Stream (Kafka) → Status Processor (JVM) → Current State (Redis), Time-series (TimescaleDB), Registry (PG) → Read API (Go) → REST+SSE → Dashboard SPA (React).
+  - ComponentDiagram (level 3): Feed Client (SSE) → useLiveFeed → FleetPulse/KpiRow/DeviceGrid → DeviceDrawer; View State.
+
+  Diagram styling: surface-1 boxes with border, text-primary labels, text-muted sub-labels (tech in mono), arrows in baseline/gridline... "Diagrams use the token colours; series tokens for neutral diagram elements, status tokens ONLY for real status meaning." So use series tokens as accents for diagram element fills/strokes. E.g. boxes stroked with `border`/`baseline`, arrows with `text-muted`/`baseline` strokes. Could accent the SPA box with series-1 stroke. Keep restrained: mostly surface fills, border strokes, muted arrows; one accent (series-1) for the frontend/SPA boundary. Text in text-secondary/text-muted; tech labels in font-data.
+
+  For SVG text: use `<text>` elements with Tailwind classes fill-text-secondary etc. Tailwind's `fill-*` and `stroke-*` utilities work with the var-based colors. Font sizes: text-[11px] etc.
+
+  Responsive: wrap diagrams in `overflow-x-auto` containers with a min-width SVG. Use fixed viewBox sizes.
+
+  I should build shared diagram primitives: a `DiagramFrame` component (overflow-x-auto wrapper + title/caption), plus reusable `Box`, `Arrow`, `Label` helpers maybe in a `diagrams/` folder.
+
+  4. Data flow — inline SVG, device → gateway → stream → processor → current state store → push service → SSE → dashboard. One-way obvious: single big directional band/arrow, stages in a row, "read-only · stateless · one way" annotation. Include latency budget (NFR-1: publish→gateway 200ms, stream commit 100ms, processing 300ms, push 200ms, render 100ms ≈ 900ms vs 5s budget) — nice mono detail from the doc.
+
+  5. Frontend component map — the actual component tree. Could render as a styled nested list (tree) with useLiveFeed feeding point marked. The requirement says "the actual component tree of THIS app (AppShell, FleetPulse, KpiRow, FilterBar, QueryPanel, DeviceGrid, DeviceCard, DeviceDrawer, ChartSection and the four charts), showing where useLiveFeed provides data." I could do this as a nested list with mono font, annotations. Note the four charts: from the file listing: Sparkline, MetricLine, StatusDistribution, UptimeTimeline. ChartSection contains UptimeTimeline, StatusDistribution, MetricLine; Sparkline is per-device (in DeviceDrawer probably). The component map section in 02-components.md lists only three under ChartSection. But the task says "ChartSection and the four charts". Let me check where Sparkline is used.
+
+  6. Tech stack — the tables from docs/03 including Rejected column. The doc has Ingest, Processing, Storage, Serving, Frontend tables plus Deployment (no rejected). I'll render each group table with Layer, Choice, Serves, Rejected. Include the Kafka and SSE callout quotes briefly.
+
+  7. ADRs — three cards: context, decision, trade-off accepted, link to docs/adr/... path. Link as relative href (they're in the repo, not deployed... but link anyway to file path; spec says "Link them to their docs/adr/ file paths"). Use `<a href="docs/adr/...">`? In a static build the docs aren't deployed. Still, the task says link them to their file paths — I'll render the path as a mono link; maybe just show the path as code. I'll make it a link to the repo-relative path — acceptable. Perhaps just display the path in mono with an anchor styled. I'll use a plain `<a href="../docs/adr/ADR-001-read-write-path-separation.md">`? That's fragile. Safer: show the path as `<code>` text — "Link them to their docs/adr/ file paths" — I'll make anchors with href to the path; it won't resolve on GitHub Pages but the task explicitly asks to link to file paths. I'll do `<a>` with the repo-relative path.
+
+  Keyboard operable: page is mostly static; tables and SVG diagrams aren't interactive (that's fine). Ensure any interactive elements (view toggles?) — none needed. Focus rings handled globally.
+
+  Let me check Sparkline usage and icons.
+
+• Let me check where the charts are used and look at a couple more components for conventions.
+
+• I have enough context. Plan the file structure:
+
+  - `frontend/src/pages/ArchitecturePage.tsx` — page composition with all 7 sections.
+  - `frontend/src/components/arch/` — supporting components:
+    - `Section.tsx` — section wrapper (eyebrow heading + description) to keep consistent typography.
+    - `diagrams/DiagramFrame.tsx` — overflow-x-auto wrapper with min-width, caption, legend slot.
+    - `diagrams/primitives.tsx` — Box, Arrow, Text helpers? For SVG, I'll build small helpers: `DBox` (rect + label + sublabel), `Arrow` (line with marker), using token class names.
+    - `diagrams/ContextDiagram.tsx`
+    - `diagrams/ContainerDiagram.tsx`
+    - `diagrams/ComponentDiagram.tsx`
+    - `diagrams/DataFlowDiagram.tsx`
+    - `ComponentMap.tsx` — nested tree.
+    - `RequirementsSection.tsx` (FR table + NFR groups).
+    - `TechStackSection.tsx`
+    - `AdrSection.tsx`
+
+  Maybe fewer files: keep it modular but not excessive. I'll do:
+
+  - `components/arch/Section.tsx`
+  - `components/arch/diagrams.tsx` — shared primitives + DiagramFrame (Box, Arrow helpers)
+  - `components/arch/C4Diagrams.tsx` — the three C4 diagrams
+  - `components/arch/DataFlowDiagram.tsx`
+  - `components/arch/ComponentMap.tsx`
+  - `components/arch/Requirements.tsx`
+  - `components/arch/TechStack.tsx`
+  - `components/arch/AdrCards.tsx`
+  - `pages/ArchitecturePage.tsx`
+
+  Token colours in SVG: use Tailwind classes `fill-surface-1`, `stroke-border`... wait, Tailwind generates fill-/stroke- utilities from the color palette. `fill-surface-1` → fill: var(--surface-1). `stroke-border` → stroke: var(--border). Text via `fill-text-secondary`, `fill-text-muted`. Good, zero hardcoded hex.
+
+  Font in SVG: set `fontFamily` via class `font-data` / `font-sans` / `font-display` on text elements — Tailwind fontFamily utilities work on SVG text.
+
+  Diagram design decisions:
+
+  DiagramFrame: 
+  ```tsx
+  <div className="overflow-x-auto rounded-md border border-border bg-surface-1 p-4">
+    <svg viewBox="0 0 W H" className="min-w-[Wpx] w-full" role="img" aria-labelledby={titleId}>
+      <title id={titleId}>...</title>
+      ...
+    </svg>
+  </div>
+  ```
+  Hmm, if I set `w-full` with viewBox, it scales down on narrow screens — that shrinks text below legibility. Instead: fixed width SVG (`width={W}`), wrapped in overflow-x-auto. That gives horizontal scroll on narrow screens, keeping text legible. Requirement explicitly says "allow horizontal scroll on narrow screens rather than shrinking text below legibility". So fixed pixel width, e.g. 720–880px wide diagrams.
+
+  Primitives:
+  - `DBox({x, y, w, h, title, subtitle, accent?})`: rect with `fill-surface-2` `stroke-border` rx=6; title text centered `fill-text-primary` font-medium 12px; subtitle `fill-text-muted` font-data 10px.
+  - Arrow: line + markerhead. Define a `<marker>` in defs per SVG with stroke/fill text-muted.
+
+  For C4 Container diagram: cluster boxes: draw a dashed boundary rect for "Is3 platform" (stroke-gridline, dashed) and arrange containers inside; SPA outside boundary with REST+SSE arrow.
+
+  Let me lay out coordinates. I'll design carefully but compactly.
+
+  **Context diagram (L1)** — 720×260:
+  - Left column: "IoT devices in the field" box at (40,30); "Technician (customer)" at (40,150); "Sales team (internal)" at (40,270)? Height needs ~340. 
+  - Right: big "Is3 platform" box at (340,100) size 200×140.
+  - Arrows: devices → platform "status messages"; platform → technician "device status" (arrow pointing left); sales → platform "onboards customers, registers devices".
+  Layout: 720×360. Devices (40,40,180,64), Technician (40,150,180,64), Sales (40,260,180,64). Platform (380,110,220,140). Arrow devices→platform rightwards at y=72 to (380,150). Platform→technician leftwards from (380,190) to (220,182). Sales→platform from (220,292) up to (450,250). Annotation: "No arrow from technician to devices — there is no control path." small muted text bottom.
+
+  **Container diagram (L2)** — 840×420:
+  Boundary: dashed rect (20,20)-(820,300) "Is3 platform".
+  Row 1 inside: Device Gateway (MQTT) (50,70,150,60) → Ingest Stream (Kafka) (240,70,150,60) → Status Processor (JVM) (430,70,160,60).
+  Row 2: Current State (Redis) (240,190,150,60), Time-series (TimescaleDB) (430,190,170,60), Registry (PostgreSQL) (640,190,150,60).
+  Arrows: Processor → each of three stores (downward fan). Then stores → Read API (Go) (430? center) ... Actually doc: stores → Read API → REST+SSE → SPA.
+  Read API at (330,320? no—boundary ends at 300). Make boundary taller: (20,20,800,360). Row2 y=200. Read API (350,300,160,56) inside boundary bottom. Arrows from stores down to Read API. Registry also feeds auth? Keep simple per diagram in doc: Registry joins the fan to Read API. Then arrow Read API → SPA outside: SPA (350,420,160,60) label "Dashboard SPA (React, static)". Total height ~520. Width 840.
+
+  Hmm, also Query Catalogue, Push Service, Auth, Cache exist in docs but the C4 container diagram in 04-architecture.md only shows: Gateway, Stream, Processor, Current State, Time-series, Registry, Read API, SPA. I'll follow the doc's diagram faithfully.
+
+  **Component diagram (L3)** — 760×340: boundary "Dashboard SPA" dashed rect. Inside: Feed Client (SSE) (50,60,150,56) → useLiveFeed (hook) (250,60,170,56). Fan down to FleetPulse, KpiRow, DeviceGrid (three boxes y=200). DeviceGrid → DeviceDrawer (below right). View State (filters, query) box bottom-left with arrows up to FleetPulse/KpiRow (they receive view state? actually view state shapes what's shown). Per doc ASCII: FleetPulse/KpiRow have arrows from View State upward. I'll replicate: View State at (90,300)... Let me set height 380.
+
+  Layout: Feed Client (50,50,150,54) → useLiveFeed (260,50,170,54), arrow labeled "fleet, lastUpdated". Fan from useLiveFeed down to three boxes at y=180: FleetPulse (60,180,140,54), KpiRow (240,180,140,54), DeviceGrid (420,180,140,54). DeviceGrid → DeviceDrawer (420,290,140,54). View State (90,290,170,54) "View State — filters, selected query"; arrows from View State up to FleetPulse and KpiRow? In the doc ASCII the arrows go upward from View State to FleetPulse and KpiRow, meaning they read view state. I'll draw dashed arrows View State → FleetPulse, View State → KpiRow labeled "read". Hmm, simpler: dashed line from View State up to the fan. Keep faithful: two upward dashed arrows.
+
+  Height: 380.
+
+  **Data flow diagram** — horizontal pipeline, one-way. 900×220: stages as boxes connected by arrows with mono latency labels:
+  Device → publish → Gateway (200ms) → Stream (100ms commit) → Processor (300ms) → Current state store → notify → Push service (200ms) → SSE → Screen render (100ms).
+  Eight boxes is wide; maybe 7 boxes: Device, Gateway, Stream, Processor, Current state store, Push service, Dashboard. Arrow labels: publish, validate, consume, write, notify, SSE. Latency chips under arrows in mono. Bottom annotation: "≈900 ms of work inside a 5 s budget (NFR-1) — the rest is headroom." Plus a one-way banner: a long arrow under everything labeled "One way only — there is no return path" with a struck-through return arrow? Make one-way obvious: draw a single bold arrow spine beneath the boxes pointing right, labeled "one way · read-only · stateless"; and maybe a muted dashed return arrow with a prohibition mark? Keep tasteful: a full-width baseline arrow with a big arrowhead, labelled. Also "no writes" — maybe dashed grey arrow going left with an X and label "no write path exists". That makes one-way nature visually obvious. I'll add a dashed, muted leftward line below with a small "✕" and text "no return path — the UI never writes". 
+
+  Width ~960 for 7 boxes at ~120px each. 7×120 = 840 + gaps. OK 960×230.
+
+  **Component map** — nested list, mono, with tree characters? "no ASCII art in a <pre>" applies to C4 diagrams; a component tree as styled nested `<ul>` with mono font is fine (it's not a diagram-in-pre; it's a real list). I'll build a proper nested list with indentation lines via border-l. Annotate where useLiveFeed provides data with a badge "useLiveFeed →" chip. Include: App (HashRouter) → AppShell → DashboardPage → FleetPulse, KpiRow, FilterBar, QueryPanel, DeviceGrid → DeviceCard, ChartSection → UptimeTimeline, StatusDistribution, MetricLine, DeviceDrawer → Sparkline; ArchitecturePage. Note: Sparkline lives in DeviceDrawer. The four charts: UptimeTimeline, StatusDistribution, MetricLine, Sparkline.
+
+  **Requirements section**: FR table (ID, Requirement, Priority) — 13 rows, priority as small pill (Must/Should/Could). Below: excluded list. NFR groups: cards grid (2 cols on lg), each group card titled by attribute cluster with mini-table (ID, Requirement, Measured by).
+
+  Groups:
+  - Performance: NFR-1, NFR-2
+  - Scalability: NFR-3, NFR-4
+  - Availability & reliability: NFR-5, NFR-6
+  - Security: NFR-7, NFR-8
+  - Usability & accessibility: NFR-9, NFR-10
+  - Maintainability & portability: NFR-11, NFR-12
+  - Observability & cost: NFR-13, NFR-14
+
+  Also short paragraph: "Three attributes dominate..." maybe as intro sentence of NFR part. Keep concise.
+
+  **Tech stack section**: tables per group (Ingest, Processing, Storage, Serving, Frontend) with columns Layer, Choice, Serves, Rejected. Plus Deployment table (Layer, Choice, Serves). Include the two callouts (Kafka, SSE) as brief quotes? Keep one short note each maybe. I'll include short notes under Kafka table and SSE (serving) — maybe one italic line under the group. Keep restrained.
+
+  **ADR cards**: three cards, each: title, status "Accepted" pill, Context (1-2 sentences), Decision, Trade-off accepted ("Given up" bullets), link to docs/adr path in mono.
+
+  Content per ADR:
+  - ADR-001: Context: ingest write-heavy/bursty vs read repetitive; customers never write. Decision: durable partitioned stream between ingest and read; processor maintains current-state + time-series; read API serves stores only, never the stream. Trade-offs: eventual consistency bounded by 5s NFR-1 budget; extra system to operate; two stores to reconcile.
+  - ADR-002: Context: FR-7 fixed queries; client is static and untrusted. Decision: server-side catalogue; client sends {queryId, params}; tenant scope applied server-side. Frontend note: mirrored as data in frontend/src/data/queries.ts with identical shape. Trade-offs: new query needs backend release; no free exploration (out of scope).
+  - ADR-003: Context: viz rules (fixed series order, no dual axis, mandatory hover/table view); chart layer re-renders every tick; bundle size matters. Decision: hand-built SVG React components, d3-scale for maths only, series colours keyed by identity. Trade-offs: we own axes/tooltips/legends + tests; no free chart types; bespoke API to learn.
+
+  Note ADR-003 mentions d3-scale — check if d3-scale is actually a dependency... package.json shows no d3-scale. ADR says "using d3-scale for maths only" but the frontend has chartUtils with own niceTicks. The task says page must reflect docs faithfully; but acceptance says "text matches the decisions actually implemented". Hmm — ADR says option 4 includes d3-scale, but implementation uses hand-rolled tick maths. To avoid claiming something not true, in ADR-003 card decision I'll say "Small SVG components, one per chart form, sharing scale and axis helpers" — faithful to the decision line in the ADR which says exactly that. Good.
+
+  Links: `<a href="docs/adr/ADR-001-read-write-path-separation.md">` — relative to base './' built output; file won't exist in dist. Alternatively link to the GitHub repo path? Unknown remote. The task says "Link them to their docs/adr/ file paths" — I'll render as a link with href to the repo-relative path; since site deploys with base './', a relative link `../../docs/...`? Honestly simplest and honest: show the path as mono text inside an anchor with href={path}. I'll do that.
+
+  Also keyboard operable: anchors and any buttons fine. Diagrams are role="img" with <title> and <desc>.
+
+  prefers-reduced-motion: no animations on this page anyway; the ping indicator is handled globally.
+
+  Now check icons.tsx to reuse icon style for status meaning? Not needed.
+
+  Let me also read DeviceDrawer briefly? Not necessary.
+
+  One more thing: check App.tsx routing quickly to confirm ArchitecturePage import. It's fine.
+
+  Check the FilterBar select styling for interactive elements? Not needed — page has no inputs.
+
+  Let me now write the code. I'll create files:
+
+  1. `frontend/src/components/arch/Section.tsx`
+  2. `frontend/src/components/arch/svg.tsx` — primitives: DiagramFrame, DBox, Arrow, marker defs
+  3. `frontend/src/components/arch/ContextDiagram.tsx`
+  4. `frontend/src/components/arch/ContainerDiagram.tsx`
+  5. `frontend/src/components/arch/SpaComponentDiagram.tsx`
+  6. `frontend/src/components/arch/DataFlowDiagram.tsx`
+  7. `frontend/src/components/arch/RequirementsSection.tsx`
+  8. `frontend/src/components/arch/ComponentMap.tsx`
+  9. `frontend/src/components/arch/TechStackSection.tsx`
+  10. `frontend/src/components/arch/AdrSection.tsx`
+  11. Rewrite `frontend/src/pages/ArchitecturePage.tsx`
+
+  Diagram primitives design:
+
+  ```tsx
+  // svg.tsx
+  import type { ReactNode } from 'react'
+  import { useId } from 'react'
+
+  export const DIAGRAM_FONT = ... // no, use classes
+
+  interface DiagramFrameProps {
+    title: string
+    description?: string
+    width: number
+    height: number
+    children: ReactNode
+  }
+
+  export function DiagramFrame({ title, description, width, height, children }: DiagramFrameProps) {
+    const titleId = useId()
+    const descId = useId()
+    return (
+      <div className="overflow-x-auto rounded-md border border-border bg-surface-1 p-4">
+        <svg
+          role="img"
+          aria-labelledby={description ? `${titleId} ${descId}` : titleId}
+          width={width}
+          height={height}
+          viewBox={`0 0 ${width} ${height}`}
+          className="block"
+        >
+          <title id={titleId}>{title}</title>
+          {description && <desc id={descId}>{description}</desc>}
+          <defs>
+            <marker id="arrow" ...>  // id collision across SVGs! use unique marker id per svg
+          </defs>
+          {children}
+        </svg>
+      </div>
+    )
+  }
+  ```
+
+  Marker IDs must be unique across the page — multiple diagrams on one page. I'll generate marker id from useId in DiagramFrame and pass it via context? Simpler: each Arrow primitive uses marker referenced by id passed down. Alternative: define arrowheads as explicit polygon elements instead of markers — more control, no id issues. An `Arrow` component that draws a line plus a small triangle at the end, computing angle. For straight horizontal/vertical arrows that's easy. I'll support arbitrary (x1,y1)→(x2,y2) and compute the triangle rotation via transform={`rotate(angle x2 y2)`}.
+
+  ```tsx
+  export function Arrow({ x1, y1, x2, y2, dashed, label, labelDy }: ...) {
+    const angle = Math.atan2(y2 - y1, x2 - x1) * 180 / Math.PI
+    // shorten line by 7px at end for arrowhead
+    const len = Math.hypot(x2-x1, y2-y1)
+    const ex = x2 - (7 * (x2-x1)) / len
+    const ey = y2 - (7 * (y2-y1)) / len
+    return (
+      <g>
+        <line x1={y1} ... className="stroke-text-muted" strokeWidth={1.5} strokeDasharray={dashed ? '4 3' : undefined} />
+        <polygon points={`0,0 8,3.5 0,7`} transform={`translate(${x2} ${y2-3.5}) rotate(${angle})`} className="fill-text-muted" />
+        {label && <text .../>}
+      </g>
+    )
+  }
+  ```
+
+  Wait the polygon: points 0,0 8,3.5 0,7 is a triangle pointing right with tip at (8,3.5). Better: tip at (0,0): points `0,0 -9,-4 -9,4`. transform translate(x2,y2) rotate(angle). 
+
+  DBox:
+  ```tsx
+  export function DBox({ x, y, w, h, label, sub, accent }: ...) {
+    return (
+      <g>
+        <rect x={x} y={y} width={w} height={h} rx={6} className={`fill-surface-2 ${accent ? 'stroke-series-1' : 'stroke-border'}`} strokeWidth={accent ? 1.5 : 1} />
+        <text x={x + w/2} y={sub ? y + h/2 - 4 : y + h/2 + 1} textAnchor="middle" className="fill-text-primary text-[12px] font-medium font-sans">{label}</text>
+        {sub && <text x={x + w/2} y={y + h/2 + 12} textAnchor="middle" className="fill-text-muted text-[10px] font-data">{sub}</text>}
+      </g>
+    )
+  }
+  ```
+
+  Multi-line labels: allow label as string array. Keep simple: label + sub only.
+
+  Boundary:
+  ```tsx
+  export function Boundary({ x, y, w, h, label }: ...) {
+    <rect ... className="fill-none stroke-gridline" strokeDasharray="6 4" />
+    <text x={x+12} y={y+18} className="fill-text-muted text-[10px] font-display uppercase tracking-wider">{label}</text>
+  }
+  ```
+
+  Also a "lane" label helper `DNote` for small annotations.
+
+  Text sizes: 12px label, 10px sub — legible. Fine.
+
+  Now layouts.
+
+  ### ContextDiagram — 760×340
+
+  Boxes: w=190,h=62.
+  - Devices: x=40,y=40. label "IoT devices", sub "in the field".
+  - Technician: x=40,y=140. "Technician", sub "the customer".
+  - Sales: x=40,y=240. "Sales team", sub "internal".
+  - Platform: x=420,y=110,w=240,h=120. "Is3 platform", sub "this system".
+
+  Arrows:
+  - devices → platform: (230,71)→(420,150)? straight horizontal better: devices center y=71, platform left edge y range 110-230. Arrow from (230,71) to (420,150) diagonal with label "status messages" at midpoint above. Diagonals are fine.
+  Actually cleaner: platform center y=170. Arrow from devices (230,71) → (420,140). Label "status messages" placed at (250,90)? Let me place labels with explicit x,y params to avoid collision fiddling.
+  - platform → technician: from (420,190) → (230,171), label "device status".
+  - sales → platform: from (230,271) → (420,210)? label "onboards customers, registers devices". Two lines? Put label above the line, maybe split: "onboards customers," / "registers devices" via two tspans. I'll allow label as string[] stacked.
+
+  Annotation bottom: y=325, centered: "Note what is absent: no arrow runs from the technician to the devices — there is no control path, by requirement." Use text-muted, 11px, maybe two lines. Width 760 gives room: ~95 chars at 11px ≈ 6px/char = 570px fits one line-ish. The sentence is ~100 chars. Split into two tspans.
+
+  Height: boxes end at 240+62=302; annotation at ~328; height 344.
+
+  ### ContainerDiagram — 860×470
+
+  Boundary: x=20,y=16,w=820,h=330, label "Is3 platform".
+  Row 1 (y=60,h=56):
+  - Device Gateway "MQTT/TLS" x=50,w=150
+  - Ingest Stream "Kafka" x=250,w=150
+  - Status Processor "JVM" x=450,w=160
+  Arrows horizontal between.
+  Row 2 (y=200,h=56):
+  - Current State "Redis" x=130,w=150
+  - Time-series "TimescaleDB" x=330,w=160
+  - Registry "PostgreSQL" x=540,w=150
+  Arrows from Processor (530,116) down to each store top: to (205,200), (410,200), (615,200).
+  Read API: x=355,y=290,w=170,h=48. label "Read API", sub "Go". 
+  Arrows from each store bottom to Read API top: from (205,256)→(380,290)? crossing lines; simpler: from store bottoms (205,256), (410,256), (615,256) converge to (440,290).
+  Boundary bottom at 16+330=346. Read API ends 338. OK.
+  - SPA outside boundary: x=350,y=400,w=180,h=56, accent series-1. label "Dashboard SPA", sub "React · static bundle".
+  Arrow Read API (440,338) → (440,400), label "REST + SSE" to the right.
+  Height: 400+56=456 → 470.
+
+  Also label row regions? The doc groups Edge/ingest, Processing, Storage, Serving. Could add tiny lane labels on the left edge of boundary ("ingest", "processing", "storage", "serving") — nice touch but adds clutter; skip or add subtle lane labels. I'll add small muted lane labels at left margin inside boundary: "ingest" at y row1 left... x=30,y=55? Might collide with boxes at x=50. Skip lane labels; keep clean. Actually it mirrors docs/02 nicely... but container diagram in 04 doesn't have them. Skip.
+
+  ### SpaComponentDiagram — 780×380
+
+  Boundary: x=16,y=16,w=748,h=348, label "Dashboard SPA".
+  - Feed Client x=60,y=56,w=150,h=54, sub "SSE"
+  - useLiveFeed x=290,y=56,w=170,h=54, sub "hook", accent? It's the data seam — accent series-1 maybe. The instruction: "showing where useLiveFeed provides data". Use accent (series-1 stroke) on useLiveFeed box. 
+  - Arrow FeedClient→useLiveFeed at y=83.
+  - Fan: from (375,110) down to three boxes at y=190, h=54:
+    - FleetPulse x=60,w=150
+    - KpiRow x=260,w=140
+    - DeviceGrid x=450,w=150
+    Arrows (375,110)→(135,190), (375,110)→(330,190), (375,110)→(525,190), labeled once: "fleet, lastUpdated" near (400,150).
+  - DeviceGrid → DeviceDrawer: DeviceDrawer x=450,y=290,w=150,h=54, sub "Esc to close". Arrow (525,244)→(525,290).
+  - View State: x=90,y=290,w=180,h=54, sub "filters · selected query". Dashed arrows from View State top to FleetPulse/KpiRow bottoms: (135,290)→(135,244), (240? ...). From view state top edge to FleetPulse bottom (135,244) vertical; and to KpiRow bottom (330,244): line from (220,290) to (330,244) diagonal dashed. Label "read" small? Add label "reads" maybe unnecessary. Keep a tiny note under boundary? Add note bottom: "View state is client-only — it never leaves the browser." at y=372 outside? Height 380 with boundary ending 364. Put note inside boundary bottom? Space at y~355 x=300? There's room right of View State row (DeviceDrawer occupies x450-600). Put note at (620,320) anchored middle? Text ~ "client-only — never leaves the browser" 10px muted, width ~200. x=450..750 region, DeviceDrawer at y290-344 x450-600. Put note at x=640,y=317 anchored middle — but two lines maybe. Alternative: height 400, note below boundary at y=388. I'll do height 392, boundary h=348 ends at 364, note centered at y=384.
+
+  ### DataFlowDiagram — 980×250
+
+  7 boxes: w=116,h=54, gap: total width for boxes 7×116=812; remaining 980-812=168 over 8 gaps = 21 — too tight for arrow labels. Make w=112: 784, gaps 196/8 ≈ 24. Hmm arrows need ~50px for label+head. Increase width to 1080? At 1440 viewport with max-w-7xl (1280) minus padding, 1080 fits without scroll; at 360 scrolls. Let's compute: choose box w=112, gap=52: total = 7*112 + 6*52 = 784+312 = 1096, +2*20 margins = 1136. A bit wide but fine (scroll on smaller).
+
+  Actually maybe drop "Current state store" and merge? No — faithful to process view: device → gateway → stream → processor → current state store → push service → dashboard. 7 nodes.
+
+  Boxes at y=60,h=54, x_i = 20 + i*(112+52).
+  Labels: Device "in the field", Gateway "MQTT/TLS", Stream "Kafka", Processor "derive status", State store "Redis", Push service "SSE", Dashboard "React SPA".
+
+  Arrows between with latency labels above line: "publish 200ms" etc. Latency values from doc: publish→gateway 200ms, stream commit 100ms, processing 300ms, push 200ms, render 100ms. Arrow labels: 
+  - Device→Gateway: "publish · 200 ms"
+  - Gateway→Stream: "validate · 100 ms" (doc: stream commit 100ms; label "commit · 100 ms"? The budget says "stream commit 100 ms". I'll use "validate" (from process view: gateway ──validate──► stream) with 100ms? Hmm mixing. Process view arrows: publish, validate, consume, write, notify, SSE. Budget: publish→gateway 200, stream commit 100, processing 300, push 200, render 100.
+  Assign: Device→Gateway "publish 200 ms"; Gateway→Stream "commit 100 ms"; Stream→Processor "consume 300 ms"; Processor→Store "write"; Store→Push "notify 200 ms"; Push→Dashboard "SSE 100 ms" (render 100ms happens at dashboard). Good enough, label under arrow in mono 9px, verb above arrow 9px muted.
+
+  One-way spine: below boxes at y=170, a long line from x=30 to x=1110 with big arrowhead, label above it centered: "one way only — read-only, stateless". Then a dashed muted reverse line at y=205 from right to left with a "✕" glyph and label "no write path exists — the UI never sends anything back". 
+
+  Draw reverse line: line from (1100,208) to (60,208) dashed stroke-gridline, and a "✕" text at midpoint in text-muted, label text beside it. 
+
+  Height 240. Also budget note: "≈ 900 ms of work inside the 5 s NFR-1 budget — the rest is headroom for network variance and retry." Put at y=235? That's getting tall; height 250, note at y=240 centered. OK.
+
+  Actually keep the design: title/desc handled by section text outside; frame contains only SVG.
+
+  ### Section component
+
+  ```tsx
+  export default function Section({ id, eyebrow, title, children, intro }: ...) {
+    return (
+      <section aria-labelledby={id} className="space-y-4">
+        <div className="space-y-1">
+          <h2 id={id} className="font-display text-lg font-semibold">{title}</h2>
+          {intro && <p className="max-w-3xl text-sm text-text-secondary">{intro}</p>}
+        </div>
+        {children}
+      </section>
+    )
+  }
+  ```
+
+  Typography roles: DashboardPage h1 `font-display text-2xl font-semibold`; sub-headings `font-display text-sm font-semibold uppercase tracking-wider text-text-muted`. I'll use h2 as font-display text-lg font-semibold text-text-primary with an eyebrow? Keep simple: h2 display lg.
+
+  ### Requirements tables
+
+  FR table: rounded border, header row muted uppercase, priority pill: Must (text-primary), Should (text-secondary), Could (text-muted) — pills with border. Excluded list below as muted chips or a sentence: "Deliberately excluded: device registration, device control, self-service sign-up, free-form query authoring, editing device data."
+
+  NFR groups: grid md:grid-cols-2 gap-4 of cards. Card: title (attribute) display uppercase small; table rows: NFR id (mono), requirement, measured by (muted, smaller). Maybe columns: ID / Requirement / Measured by. 7 cards → grid 2 cols, last row one card.
+
+  Also the "three dominate" note as intro paragraph.
+
+  ### Tech stack
+
+  For each group: sub-heading h3 display sm uppercase muted + table (Layer, Choice, Serves, Rejected). Choice bold (font-medium text-primary), Serves as mono ids, Rejected text-secondary with the alternative bolded? Rejected format: "HTTP polling — too chatty..." I'll render alternative name in text-primary/secondary then reason in muted. Keep whole cell text-secondary, alternative in text-text-primary font-medium.
+
+  Wrap tables in overflow-x-auto for 360px.
+
+  ### Component map
+
+  Nested list with mono names + annotation text. Structure:
+
+  ```
+  App (HashRouter)
+  └─ AppShell — top bar, live-feed indicator, footer
+     ├─ DashboardPage
+     │  ├─ FleetPulse — signature hero, one tick per device        [feeds: useLiveFeed]
+     ...
+  ```
+
+  Implement as nested `<ul>` with `border-l border-gridline` indent guides. Node: name in font-data text-primary, dash, note in text-secondary text-sm. Mark the seam: DashboardPage row gets a small chip "data: useLiveFeed()" — a styled span with series-1 text? Series tokens for neutral diagram elements OK. Chip: border border-series-1/40? opacity modifiers on var colors: Tailwind can't do opacity on var() without color-mix... `border-series-1/40` won't work with plain var. Use text-series-1 for the chip text and border-border. Fine: a small pill "useLiveFeed" in text-series-1 with border.
+
+  Where does useLiveFeed provide data? DashboardPage calls useLiveFeed; fleet flows to FleetPulse, KpiRow, DeviceGrid, ChartSection, QueryPanel(counts), DeviceDrawer. In the map, annotate DashboardPage: "calls useLiveFeed — fleet + lastUpdated flow down as props". And a note below the map: "In the real system useLiveFeed wraps the Feed Client; in this build it wraps the mock generator. Swapping mock for a live SSE feed touches one hook and nothing else."
+
+  ### ADR cards
+
+  Card: header row: "ADR-001" mono chip + title + "Accepted" pill (status pill — Accepted is a status; use status-good? "status tokens ONLY for real status meaning" — ADR status "Accepted" is a real status of the decision. Using status-good with icon+text might be overkill; a neutral pill with text-muted border and text-secondary label "Accepted" is safer. I'll do neutral.
+  Body: three blocks with small labels: Context / Decision / Trade-off accepted. Footer: link mono: `docs/adr/ADR-001-read-write-path-separation.md` with an arrow "→". Anchor styling: text-series-1 hover:underline.
+
+  ### Page intro
+
+  Section 1: h1 "Architecture" + intro paragraph: "Is3 is a read-only dashboard for device fleet status. Three constraints shape everything: the customer never writes data; device data is stateless status pushed from the field; there is no registration — sales onboards customers manually." Present three constraints as three small cards? "Short intro naming the system and the three constraints". I'll do a paragraph + three compact chips/cards: Read-only (no create/update/delete), Stateless data (status pushed from devices), No registration (sales onboards manually). Three mini-cards in a grid make it scannable and product-like. 
+
+  Let me also double check: "keyboard operable" — static content + links, fine.
+
+  Files count ~10. Let me write them now.
+
+  Careful TS strict: no unused imports.
+
+  Let me define Arrow label rendering: label can be string or string[]; position params lx, ly, anchor.
+
+  I'll write primitives file `frontend/src/components/arch/svg.tsx`:
+
+  ```tsx
+  /**
+   * Shared SVG diagram primitives for the architecture page.
+   * Tokens only — colour comes from Tailwind classes bound to CSS custom
+   * properties (BRIEF §3). Status tokens are never used here: nothing in a
+   * C4 diagram is a device status.
+   */
+  ```
+
+  DiagramFrame with unique marker not needed (polygons). Include overflow-x-auto and aria.
+
+  Edge cases: `stroke-border` — Tailwind generates stroke-* for all colors including `border`. Yes, stroke-border → stroke: var(--border). fill-surface-2 etc fine. `fill-none` exists. `stroke-gridline` fine.
+
+  Text classes: `text-[12px]` font sizing works on SVG text? Tailwind text-* sets font-size — yes applies. font-family via font-sans/font-data/font-display — yes. fill via fill-*. Good.
+
+  Letter-spacing uppercase labels: use class tracking-wider uppercase.
+
+  Now write everything. Also need check: App.tsx already routes /architecture to ArchitecturePage — verify.
+
+• I have the full picture. Now let me verify the routing, then build the page and its supporting components.
+
+• Routing exists. Now write the components. Start with shared primitives + Section.
+
+• Routing is in place. Now I'll build the T5 components — first the shared section wrapper and SVG diagram primitives.
+
+• Now the three C4 diagrams. Context diagram first.
+
+• Now the three C4 diagrams.
+
+• Now the SPA component diagram (level 3). Layout: width 780, height 392.
+  - Boundary x=16,y=16,w=748,h=348.
+  - Feed Client x=60,y=52,w=150,h=54 sub "SSE"
+  - useLiveFeed x=290,y=52,w=170,h=54 sub "hook" accent
+  - arrow (210,79)→(290,79)
+  - fan from (375,106) to three boxes y=190 h=54: FleetPulse x=60 w=150 (center 135), KpiRow x=260 w=140 (center 330), DeviceGrid x=450 w=150 (center 525).
+  - label "fleet, lastUpdated" near the fan: place at (420,148) anchor start? The fan lines: (375,106)→(135,190); (375,106)→(330,190); (375,106)→(525,190). Label at x=392,y=140 anchor start mono — might cross the line to 525? Line from (375,106) to (525,190) passes x=392 at y≈115. Label at y=140 sits right of it. OK.
+  - DeviceDrawer x=450,y=290,w=150,h=54 sub "Esc to close"; arrow (525,244)→(525,290).
+  - View State x=90,y=290,w=180,h=54 sub "filters · selected query"; dashed arrows (135,290)→(135,244) and (220,290)→(330,244).
+  - Note below boundary at y=384: "View state is client-only — it never leaves the browser." Boundary bottom at 16+348=364. Height 392. Note centered x=390 y=382.
+
+  The QueryPanel/FilterBar not in the C4 L3 doc diagram — fine, faithful to doc. Component map section covers the full tree.Now the Requirements section (FR table + NFR groups), Component map, Tech stack, ADR cards. Then the page.
+
+• Now the requirements, component map, tech stack, and ADR sections.
+
+• Now the page itself, composing all seven sections.
+
+• Check that ContextDiagram's unused imports are fine — I imported Boundary, Arrow, DBox, DiagramFrame, DLabel — all used. SpaComponentDiagram imports all used. DataFlowDiagram: Arrow, DBox, DiagramFrame, DLabel used. ContainerDiagram: Arrow, Boundary, DBox, DiagramFrame, DLabel used.
+
+  ComponentMap: TreeNode returns ReactNode — function component returning ReactNode is fine as long as used as `<TreeNode/>`? A function returning ReactNode used as JSX component needs to return ReactElement | null in older @types/react 18 — actually React 18 types allow ReactNode return? In React 18 types, function components must return ReactElement | null. Returning ReactNode may error "its return type 'ReactNode' is not a valid JSX element" — with React 18 types, JSX component return type constraint: ReactElement | null. ReactNode is not assignable in TS strict for JSX usage? Actually with @types/react 18, the JSX.LibraryManagedAttributes / JSX.ElementType... The common error appears with React 19 types. For React 18 types, returning ReactNode from a function used as component gives error "Its instance type ... is not a valid JSX element"? The classic issue: 'TreeNode' cannot be used as a JSX component. Its return type 'ReactNode' is not a valid JSX element. — this occurs in React 18 types too. Safer: change return type to JSX.Element or just remove annotation. Let me remove the annotation and import type.
+
+• Let me fix a potential TS strictness issue in `ComponentMap.tsx` (ReactNode return type on a JSX component), then run the build.
+
+
+vite v5.4.21 building for production...
+transforming...
+✓ 72 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                                                        0.43 kB │ gzip:  0.29 kB
+dist/assets/ibm-plex-mono-latin-400-normal-CvHOgSBP.woff              13.14 kB
+dist/assets/ibm-plex-mono-latin-500-normal-CB9ihrfo.woff              13.16 kB
+dist/assets/ibm-plex-mono-latin-400-normal-DMJ8VG8y.woff2             14.71 kB
+dist/assets/ibm-plex-mono-latin-500-normal-DSY6xOcd.woff2             14.89 kB
+dist/assets/ibm-plex-sans-condensed-latin-600-normal-6XnkKYvF.woff    18.76 kB
+dist/assets/ibm-plex-sans-condensed-latin-600-normal-CRd5VyFf.woff2   19.82 kB
+dist/assets/ibm-plex-sans-latin-400-normal-CYLoc0-x.woff              22.10 kB
+dist/assets/ibm-plex-sans-latin-400-normal-CDDApCn2.woff2             22.59 kB
+dist/assets/ibm-plex-sans-latin-500-normal-BgVn5rGT.woff              23.92 kB
+dist/assets/ibm-plex-sans-latin-500-normal-6ng42L7E.woff2             24.18 kB
+dist/assets/index-DF2rqeF_.css                                        17.95 kB │ gzip:  4.48 kB
+dist/assets/index-DcmR6Iu9.js                                        245.09 kB │ gzip: 77.93 kB
+✓ built in 1.07s
+• Build exits 0 with zero TS errors. Now screenshot the built /#/architecture route at 1440px and 360px. Need to serve dist and take screenshots. Check for a headless browser: chromium? playwright? Let me check what's available./usr/bin/google-chrome
+/usr/bin/google-chrome-stable
+b
+chromium-1217
+chromium-1223
+chromium-1228
+chromium_headless_shell-1217
+chromium_headless_shell-1223
+chromium_headless_shell-1228
+ffmpeg-1011
+google-chrome is available. Serve dist and screenshot with chrome headless. Use `google-chrome --headless --screenshot=... --window-size=1440,2400 url`. Full-page screenshot needs newer headless mode: `--headless=new --screenshot --window-size`. Full page height — the architecture page is long. Chrome's --screenshot captures viewport only. Better to use a large window height, or capture multiple segments. The page is probably ~5000px tall at 1440. Let me serve with a simple http server and take screenshots with tall windows (e.g. 1440x6000), then view. Also 360 width — page even taller, maybe 9000px. Chrome window-size max might be limited but let's try.
+
+  Alternative: use playwright via npx? No playwright package installed in project; python playwright not installed. There's playwright browsers cache but no library. Chrome headless screenshot is simplest.
+
+  Start server: `cd frontend/dist && python3 -m http.server 4173` in background.
+
+• Chrome is available. I'll serve the built app and take screenshots.
+
+1106175 bytes written to file /tmp/t5-shots/arch-1440.png
+694555 bytes written to file /tmp/t5-shots/arch-360.png
+total 1880
+drwxrwxr-x   2 marketer7 marketer7    4096 Sep 18 11:02 .
+drwxrwxrwt 238 root      root       110592 Sep 18 11:02 ..
+-rw-rw-r--   1 marketer7 marketer7 1106175 Sep 18 11:02 arch-1440.png
+-rw-rw-r--   1 marketer7 marketer7  694555 Sep 18 11:02 arch-360.png
+arch-1440 (1440, 7000)
+arch-360 (360, 12000)
+• The full images are large; reading them will downsample heavily and diagrams may be unreadable. Better: slice into segments and read each. Let me slice the 1440 one into ~3-4 chunks of ~1750px height and 360 one into ~5 chunks of 2400px. Then read them with ReadMediaFile.
+
+• Let me slice the tall screenshots into readable segments.arch-1440 5 segments
+arch-360 6 segments
+
+
+• Looks quite good so far. Issues I notice:
+
+  1. Container diagram: "Registry PostgreSQL" label overlaps — "Registry" text overlaps "PostgreSQL"? Looking at the image: "Registry" box shows "Registry" and "PostgreSQL" below, slightly overlapping? It reads "Registry/PostgreSQL" cramped. Actually sub is at y + h/2 + 12, box h=56, label at y+h/2-3 dominantBaseline central. Should be fine. In the screenshot, "Registry" and "PostgreSQL" look slightly overlapping but readable. Hmm, it renders "Registry" then "PostgreSQL" — appears okay-ish.
+
+  2. Container diagram: the boundary bottom (y=346) — Read API box at y=292..340 fits. REST + SSE label and SPA box are cut off in this segment — will check next segment.
+
+  3. Context diagram: fine. The empty platform boundary with centered text looks a bit empty but okay. Actually the boundary labeled "IS3 PLATFORM" and centered text "Is3 platform / this system" is redundant — boundary label + centered label. Acceptable, but the boundary is 330 wide × 160 tall with lots of empty space. It's okay.
+
+  Let me view the remaining 1440 segments.1440px looks good overall. Issues spotted:
+
+  1. In ComponentMap intro I wrote "swapping the mock for a live WebSocket touches one hook and nothing else" — but the architecture says SSE, and 02-components.md says "swapping the mock for a real WebSocket touches one hook and nothing else". Actually 02-components.md says WebSocket verbatim. But elsewhere SSE is the push. The doc says WebSocket — I wrote WebSocket, matching the doc. Fine.
+
+  2. Data flow diagram: hop labels — "SSE · render" label appears to overflow into Dashboard box ("SSE · render" sits over the box edge?). In the screenshot, last hop label "SSE · render" is above the arrow, slightly clipped by the Dashboard box? It reads "SSE · render" and looks slightly overlapping the Dashboard box edge. The label is centered between boxes at (x1+x2)/2 where gap is 52px wide; "SSE · render" at 10px mono ≈ 70px wide, so it overflows the gap and overlaps boxes on both sides. Same potentially for "consume". Looking at the screenshot: "consume" fits-ish, "SSE · render" overlaps the boxes. Need to fix — either shorten label to "SSE" and put "render" into ms line, or move labels above the boxes. Options: shorten verbs: publish, commit, consume, write, notify, SSE. And ms labels: 200/100/300/—/200/100 ms. "SSE" alone is 3 chars, fits. Render happens at dashboard; budget note covers it. I'll rename hop 6 verb to "SSE", ms "100 ms". But then "render 100ms" attribution lost — budget footnote says ≈900ms; fine, the doc's render 100ms is subsumed. Alternatively put label above with more room... just shorten.
+
+  Also hop labels at y-12 and ms at y+18: verb above arrow, ms below arrow — but in the screenshot ms appears to the left-under? Looks fine: "200 ms" under arrow.
+
+  Wait, looking again at the data flow: verb labels are placed at (x1+x2)/2 where x1=box right+4, x2=next box left-4; gap center. "publish" ~40px wide in a 44px gap — tight but OK. "consume" ~42px OK.
+
+  3. Container diagram: "Registry PostgreSQL" — in segment 1, the Registry box text: "Registry" and "PostgreSQL" appear cramped/overlapping ("RegistrPostgreSQL"?). Looking at segment-1 image: box shows "Registry" with "PostgreSQL" directly beneath, slight visual crowding but readable. Actually it looks like "Registry" and "PostgreSQL" overlap a bit: label at y+h/2-3=225 center, sub at y+h/2+12=240, both dominantBaseline central → label occupies ~218-232, sub ~234-246. No overlap. The screenshot shows them close but distinct. OK.
+
+  4. Context diagram: The platform boundary is large and empty-ish with centered text. Acceptable.
+
+  5. L3 diagram looks good. Dashed arrows from View State to FleetPulse/KpiRow look good.
+
+  6. Tech stack tables: Serving table "Serves" column shows "NFR-3, NFR-5" wrapping awkwardly ("NFR-5" onto second line) — acceptable. Rejected column readable with strikethrough names. Good.
+
+  7. ADR cards look good. Links in series-1 blue.
+
+  8. Data flow: "✕" and no-write-path dashed line look good.
+
+  One more check at 1440: the strikethrough on rejected names — I used `decoration-gridline` — works.
+
+  Now check the 360px screenshots.At 360px the layout works: text wraps, tables scroll horizontally (the FR table shows clipped at right — but it's inside overflow-x-auto so it scrolls; the screenshot captures only the visible portion — that's expected and per spec "allow horizontal scroll on narrow screens"). The NFR cards: text seems clipped at right edge — NFR cards are NOT in overflow containers; they're in a grid with text that should wrap. Look at NFR-1: "A status change is visible on the dashboard w... device sending it (p95)" — text appears cut at the right edge rather than wrapping? In the segment, "visible on the dashboard w" is cut off mid-word. Hmm — is the whole page wider than 360? The intro paragraph also appears cut: "shows a custome..." — cut at right edge. That suggests the whole page overflows horizontally (something wider than viewport causing body scroll), and the screenshot only shows the left 360px of a wider layout... Actually chrome window-size=360 sets viewport 360; if content overflows, paragraphs should still wrap at 360 unless some element forces width. Wait — the header nav "Is3 Fleet Architecture" fits. Intro paragraph text appears cut mid-word at the right edge with no wrapping... Look: "Is3 is a near-real-time dashboard that shows a custome" — cut. That means the paragraph is wider than 360 and NOT wrapping → page has horizontal overflow at viewport level. What causes it? Possibly the NFR `<li>` with `pl-12` on measured-by, no... Something with fixed width: tables have min-w but inside overflow-x-auto — fine. The component map? Long mono names could overflow but they wrap? No — paragraphs with spaces wrap. A long unbroken string could force overflow: e.g. ADR links with break-all — fine. The data-flow diagram is inside overflow-x-auto. Hmm, but the DiagramFrame has overflow-x-auto with a fixed-width svg child — that should contain it.
+
+  Wait — actually look again: cards "READ-ONLY" etc text also cut at right. Everything's cut. So the body is wider than 360. The culprit might be the screenshot: chrome headless --window-size=360,12000 with hide-scrollbars... if page has horizontal scrollbar hidden, content still lays out at viewport width. Something forces min body width. Candidates:
+  - AppShell header: flex with customer name hidden on sm — fine.
+  - `main max-w-7xl px-4` — fine.
+  - In RequirementsSection FR table: `min-w-[34rem]` inside `overflow-x-auto` — contained.
+  - TechStack tables min-w-[44rem] inside overflow-x-auto — contained.
+  - DiagramFrame: `overflow-x-auto` div containing svg width=1136 — contained... unless the div itself is inside something that stretches? `overflow-x-auto` should clip. Hmm.
+
+  Wait — look at segment 0 more carefully: the constraint cards DO show text cut at right edge: "The customer never creates, updates or deletes data..." — the grid sm:grid-cols-3 doesn't apply at 360 (sm=640), so single column full width. The card border — I can see left border at x=16 and... the right border isn't visible within 360! So the cards extend beyond 360. Yes, page-level horizontal overflow.
+
+  What element forces it? Let me think about `DLabel` with long text lines — inside svg, fixed width svg — contained by overflow-x-auto. Unless... `DiagramFrame`'s div is `overflow-x-auto` — yes. Hmm, but does overflow-x-auto work when the parent is a flex/grid item? ArchitecturePage is `div.space-y-10` block layout inside main. Sections are blocks. Should be fine.
+
+  Another candidate: the FR table caption `sr-only`? No.
+
+  Actually — check `--window-size=360,12000`: maybe Chrome enforces a minimum window width? Chrome headless minimum width might be ~500px? The screenshot is exactly 360 wide though. But if Chrome set viewport to 360... content cut implies layout wider than 360.
+
+  Hmm, wait: could it be `<h2>` long headings? "NON-FUNCTIONAL, GROUPED BY ATTRIBUTE" wraps fine.
+
+  Let me actually debug: run chrome with JS to measure document.documentElement.scrollWidth at 360 viewport. Use --dump-dom? Better: use a small script via chrome headless --run-all-compositor-stages... Simplest: write a tiny node script? No puppeteer. Use chrome --headless --dump-dom won't give widths.
+
+  Alternative: use Chrome DevTools Protocol via websocat? Overkill. Let me instead test with `--force-device-scale-factor=1` and add `--window-size=360,800` and screenshot just the top to confirm overflow, and inspect which element overflows by temporarily... Actually easier: use python + websockets? No.
+
+  Alternative approach: try chrome's `--headless=new --dump-dom` won't help. 
+
+  Hmm — one real suspect: in `index.css`, `:focus-visible` outline — no. Another suspect: `AppShell` footer `flex justify-between` with two spans — "Is3 — device fleet status" and "Read-only · data refreshes automatically" — combined width might exceed 360 → overflow! At 360px, those two spans: first ~150px, second ~220px = 370px + padding 32px = >400px. That would force horizontal overflow of the whole page! On the dashboard this would have been an issue too... but T3 was verified at 390px — 390 might have been just enough. At 360 it overflows.
+
+  That's a pre-existing AppShell issue (T1), which I shouldn't modify? "Do not modify T1-T4" — but the quality floor says responsive to 360px. Hmm. The footer text overflows at 360. Let me verify it's actually the footer before blaming. Also the nav header: "Is3 Fleet Architecture" + "Live feed" — fits.
+
+  Let me measure properly. I can use chromium headless with CDP via python's built-in? No websocket lib guaranteed. Check if python has websocket... Simpler: create a tiny HTML test? Actually — I can use `--headless=new --dump-dom` with an injected script? No.
+
+  Try: `google-chrome --headless=new --print-to-pdf` — no.
+
+  Node: check if node has any CDP client... no puppeteer. But `npx playwright` could be downloaded — heavy.
+
+  Alternative quick check: temporarily hide footer via CSS? Instead, let me reason: footer spans: "Is3 — device fleet status" (25 chars) and "Read-only · data refreshes automatically" (40 chars) at text-xs (12px) ≈ 6px/char → 150 + 240 = 390 + gap 16 + px-4 32 = 438 > 360. Yes, footer overflows at 360.
+
+  Also check the FR table ID column: "FR-10" wraps to "FR-\n10" at 360 because the table scrolled... fine.
+
+  But wait — is the overflow really page-level? The screenshots show the section cards extending beyond right edge — consistent with body width > 360 caused by the footer. The fix: make footer responsive (stack or hide the right span on narrow). That's in AppShell (T1). The instruction says don't modify T1-T4 features; but a one-line responsive fix to make the page 360-compliant is arguably necessary for T5's constraint "responsive to 360px". Hmm, "Do not modify them" — T1-T4 are the dashboard features. Modifying AppShell footer risks violating instructions. 
+
+  Alternative without touching AppShell: nothing on my page can fix the footer's width. Unless... my page's overflow-x-auto containers already handle their own width; the footer is the blocker.
+
+  Let me first verify the footer is the culprit before deciding. I can test by screenshotting with a small tweak? Or measure scrollWidth via a data: URL trick... 
+
+  Actually, I can use Node with chrome-remote-interface? Not installed. Check node_modules for ws? Let me check if `npx playwright` exists globally or if python playwright can be pip installed into a venv (allowed: virtual env inside working dir). The playwright browsers are already in ~/.cache/ms-playwright. pip install playwright in a venv would let me script precisely. That's a reasonable tool investment.
+
+  Let me create a venv in /tmp, pip install playwright, and use it for measurements + future screenshots.ok
+Traceback (most recent call last):
+  File "<stdin>", line 4, in <module>
+  File "/tmp/t5-venv/lib/python3.12/site-packages/playwright/sync_api/_generated.py", line 16814, in launch
+    self._sync(
+  File "/tmp/t5-venv/lib/python3.12/site-packages/playwright/_impl/_sync_base.py", line 115, in _sync
+    return task.result()
+           ^^^^^^^^^^^^^
+  File "/tmp/t5-venv/lib/python3.12/site-packages/playwright/_impl/_browser_type.py", line 101, in launch
+    await self._channel.send(
+  File "/tmp/t5-venv/lib/python3.12/site-packages/playwright/_impl/_connection.py", line 76, in send
+    return await self._connection.wrap_api_call(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/t5-venv/lib/python3.12/site-packages/playwright/_impl/_connection.py", line 632, in wrap_api_call
+    raise rewrite_error(error, f"{parsed_st['apiName']}: {error}") from None
+playwright._impl._errors.Error: BrowserType.launch: Executable doesn't exist at /home/marketer7/.cache/ms-playwright/chromium_headless_shell-1243/chrome-headless-shell-linux64/chrome-headless-shell
+╔════════════════════════════════════════════════════════════╗
+║ Looks like Playwright was just installed or updated.       ║
+║ Please run the following command to download new browsers: ║
+║                                                            ║
+║     playwright install                                     ║
+║                                                            ║
+║ <3 Playwright Team                                         ║
+╚════════════════════════════════════════════════════════════╝
+Playwright version wants chromium_headless_shell-1243, but cache has 1217/1223/1228. Use system chrome instead: launch(executable_path='/usr/bin/google-chrome').{'scrollW': 360, 'innerW': 360, 'wide': []}
+scrollWidth = 360, innerWidth = 360, no overflowing elements. So the page is NOT overflowing at 360px! Then why did the chrome CLI screenshot look cut off?
+
+  Ah — the CLI screenshot earlier used `--window-size=360,12000`. Perhaps chrome CLI headless with a tall window uses a different device scale or the `--hide-scrollbars`... Or the huge window height (12000) caused issues. Actually looking at the 360 screenshots again: text was cut mid-word at the right edge with content continuing beyond — but maybe what I saw was the tables' internal horizontal scroll (expected) — no wait, the intro paragraph and constraint cards were cut too.
+
+  Possibility: chrome CLI headless has a minimum window width (~500?) and then the screenshot was downscaled to 360? The image was exactly 360x12000. If the viewport were actually ~500 wide but the image scaled to 360... text would appear smaller, not cut. Hmm, the text appeared cut mid-word.
+
+  Wait — maybe with window-size 360x12000, Chrome applied a minimum content width and clipped. Actually known behavior: headless Chrome old/new caps window size and has minimum width? Let me just re-take the 360 screenshot with playwright at proper viewport and full_page. That's authoritative.
+
+• scrollWidth is exactly 360 — no overflow. The CLI screenshot must have lied. Let me retake the 360px screenshots properly via Playwright with full-page capture.pw-360 scrollW= 360 scrollH= 10646
+pw-1440 scrollW= 1440 scrollH= 6789
+
+
+pw-360 360 10646 6 segments
+pw-1440 1440 6789 5 segments
+• Now the 360px view is correct — text wraps, cards fit, and diagrams scroll horizontally within their frames (expected: "allow horizontal scroll on narrow screens rather than shrinking text"). The FR table also scrolls internally.
+
+  The earlier CLI screenshot was misleading (probably forced minimum width scaling). Good.
+
+  One nit: FR table at 360 — the table min-w-[34rem]=544px scrolls; ID column shows "FR-10" wrapping as "FR-\n10" — because ID column narrow. Add `whitespace-nowrap` to the ID cell. Minor polish.
+
+  Also NFR id "NFR-10" fits fine in cards.
+
+  Now fix the data-flow "SSE · render" label collision. Also check remaining 360 segments for diagrams/tech stack/ADRs.360px is solid. Tables scroll internally (expected per spec), diagrams scroll, ADR cards stack, footer wraps fine ("Is3 — device fleet status" stacked — interesting, it wrapped onto two lines, no overflow).
+
+  Remaining fixes:
+  1. Data-flow hop 6 label "SSE · render" too wide for the 52px gap — collides with boxes. Change verb to "SSE" with ms "100 ms".
+  2. FR table ID column: add whitespace-nowrap so "FR-10" doesn't wrap.
+
+  Also double-check 1440 segments 1 (Registry label) — it looked fine actually. Let me make the two fixes, rebuild, and verify the data-flow diagram region closely at 1440.The HTTP server background task timed out (600s default). I need to rebuild and restart the server, then re-screenshot the data-flow area to verify.dist/assets/index-DF2rqeF_.css                                        17.95 kB │ gzip:  4.48 kB
+dist/assets/index-Bgt4En6_.js                                        245.10 kB │ gzip: 77.93 kB
+✓ built in 1.07s
+console errors: none
+The data flow diagram now reads cleanly: hop labels fit their gaps, one-way spine obvious, dashed crossed-out return path below, budget note at bottom. 
+
+  Minor: "publish" label slightly touches the Device box edge ("publish" starts right at box edge) — it's placed centered in gap, "publish" ~36px wide, gap 52 minus arrow padding — looks acceptable in the render, tiny kiss with the box edge. Fine.
+
+  The ✕ sits below the label text rather than on the dashed line? The ✕ is at y=spineY+34 dominantBaseline central at x=mid-118, and the label "no write path exists..." centered. In the render, ✕ appears under the label, slightly below the dashed line. Hmm, looking closely: the label text sits above the dashed line and ✕ below-left of label center, actually on the dashed line? It reads fine — the ✕ marks the dashed return line. Acceptable.
+
+  Also check the final FR table rendering and take a final full-page look at 1440 to confirm everything post-fix. Also verify reduced-motion — no animations on this page; nothing to do.
+
+  Now also verify keyboard operability: interactive elements on the page are the ADR links (anchors) — focusable, global focus-visible ring. Fine.
+
+  Let me grab final full-page screenshots at both widths to confirm, then check for hardcoded hex in new files, then write T5-SUMMARY.md.
+
+  Also verify zero console errors — done ('none').
+
+  Let me view final 1440 segments quickly (already saw most; only dataflow changed + FR id nowrap). I'll re-screenshot 1440 full and check segment with dataflow + component map (segment 2 area) — actually dataflow was at ~3500px. I already verified dataflow close-up. FR table change is trivially safe. I'll do one final sanity screenshot of the whole 1440 page top segment? Not needed.
+
+  Check hardcoded hex: grep in new files.
+
+• The data flow diagram is fixed and clean. Final verification: no hardcoded hex in the new files, and a final full-page 360 check of the fixed areas.360 scrollW = 360
+focus check: {'tag': 'A', 'outline': 'solid 2px'}
+
+
+• Zero hardcoded hex, 360px scrollWidth is exactly 360, focus ring works on the ADR links. Let me view the two verification screenshots quickly (dataflow at 360 shows left portion with scroll; FR table at 360).FR IDs no longer wrap ("FR-10" on one line). The table scrolls horizontally at 360 — expected per spec. 
+
+  All good. Now stop the server and write orchestration/logs/T5-SUMMARY.md with files added and exact build output. Need the exact build output — I have the last build's tail; let me capture the full build output for the summary. Run npm run build once more capturing full output (and to confirm exit 0 after final edits — already did after edits? The last build was AFTER the two fixes? Order: I made the two edits, then ran build (yes — edits happened, then build with index-Bgt4En6_.js). Good, that build is current. Let me capture full output for the summary.
+> is3-dashboard@0.1.0 build
+> tsc -b && vite build
+
+vite v5.4.21 building for production...
+transforming...
+✓ 72 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                                                        0.43 kB │ gzip:  0.29 kB
+dist/assets/ibm-plex-mono-latin-400-normal-CvHOgSBP.woff              13.14 kB
+dist/assets/ibm-plex-mono-latin-500-normal-CB9ihrfo.woff              13.16 kB
+dist/assets/ibm-plex-mono-latin-400-normal-DMJ8VG8y.woff2             14.71 kB
+dist/assets/ibm-plex-mono-latin-500-normal-DSY6xOcd.woff2             14.89 kB
+dist/assets/ibm-plex-sans-condensed-latin-600-normal-6XnkKYvF.woff    18.76 kB
+dist/assets/ibm-plex-sans-condensed-latin-600-normal-CRd5VyFf.woff2   19.82 kB
+dist/assets/ibm-plex-sans-latin-400-normal-CYLoc0-x.woff              22.10 kB
+dist/assets/ibm-plex-sans-latin-400-normal-CDDApCn2.woff2             22.59 kB
+dist/assets/ibm-plex-sans-latin-500-normal-BgVn5rGT.woff              23.92 kB
+dist/assets/ibm-plex-sans-latin-500-normal-6ng42L7E.woff2             24.18 kB
+dist/assets/index-DF2rqeF_.css                                        17.95 kB │ gzip:  4.48 kB
+dist/assets/index-Bgt4En6_.js                                        245.10 kB │ gzip: 77.93 kB
+✓ built in 1.09s
+EXIT=0
+Done. Summarize for the user concisely.
+
+• T5 is complete and verified. Summary of what landed:
+
+  **Files added** (all under `frontend/src/components/arch/` plus the page rewrite):
+
+  - `Section.tsx` — shared section frame with the dashboard's typography roles
+  - `svg.tsx` — diagram primitives (`DiagramFrame`, `DBox`, `Boundary`, `Arrow`, `DLabel`), tokens only, status colours deliberately unused in diagrams
+  - `ContextDiagram.tsx`, `ContainerDiagram.tsx`, `SpaComponentDiagram.tsx` — the three C4 levels as hand-drawn inline SVG, faithful to `docs/04-architecture.md`
+  - `DataFlowDiagram.tsx` — the one-way device→screen path with the per-hop NFR-1 latency budget (≈900 ms vs 5 s), a bold one-way spine and a dashed crossed-out "no write path" line beneath it
+  - `RequirementsSection.tsx` — FR-1…13 table with priority pills + excluded scope; the 14 NFRs grouped into 7 attribute cards with their measurements
+  - `ComponentMap.tsx` — this app's real tree (all four charts included, Sparkline under DeviceDrawer) with `useLiveFeed` chips marking the data seam
+  - `TechStackSection.tsx` — all six tables from `docs/03`, rejected alternative kept in every row (struck-through name + reason)
+  - `AdrSection.tsx` — the three ADRs as cards with context / decision / trade-off accepted, each linking to its `docs/adr/` path
+  - `frontend/src/pages/ArchitecturePage.tsx` — placeholder replaced, sections in the required order
+
+  **Verification done:**
+  - `npm run build` exits 0, zero TS errors under strict mode (exact output in `orchestration/logs/T5-SUMMARY.md`)
+  - Screenshotted the built `/#/architecture` at 1440px and 360px via headless Chrome and inspected every segment
+  - 360px: `scrollWidth === 360`, no page overflow; diagrams and wide tables scroll horizontally instead of shrinking text
+  - Zero console errors; ADR links show the global 2px focus ring; no animations on the page so reduced-motion is trivially respected
+  - Grep confirms zero hardcoded hex in the new files
+
+  Two issues found in the screenshot pass and fixed: the "SSE · render" hop label overlapped the last diagram gap (shortened to "SSE"), and FR ids wrapped at narrow widths (`whitespace-nowrap`). One caveat from verification: Chrome's CLI `--screenshot` at 360px renders with a forced minimum width and misleads — I re-verified with Playwright at a true 360px viewport, which is clean.
+
+To resume this session: kimi -r session_fbcebee0-ef46-401a-b078-3e4336a78979

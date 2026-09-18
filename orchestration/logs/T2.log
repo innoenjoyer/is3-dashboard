@@ -1,0 +1,1356 @@
+kimi version 0.39.1
+• Let me read the required files first.
+
+• I'll start by reading the BRIEF, TASKS, and existing code.
+
+frontend/src/main.tsx
+frontend/src/pages/DashboardPage.tsx
+frontend/src/pages/ArchitecturePage.tsx
+frontend/src/index.css
+frontend/src/components/AppShell.tsx
+frontend/src/App.tsx
+{
+  "name": "is3-dashboard",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@fontsource/ibm-plex-mono": "^5.1.0",
+    "@fontsource/ibm-plex-sans": "^5.1.0",
+    "@fontsource/ibm-plex-sans-condensed": "^5.1.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.26.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.5",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.41",
+    "tailwindcss": "^3.4.10",
+    "typescript": "^5.5.4",
+    "vite": "^5.4.2"
+  }
+}
+• Check tsconfig for strict mode quickly, then write the data layer. Files to create in frontend/src/data/:
+
+  - types.ts
+  - prng.ts (mulberry32)
+  - generateFleet.ts (or fleet.ts)
+  - status.ts (deriveStatus)
+  - useLiveFeed.ts
+  - queries.ts
+  - index.ts (barrel, optional but nice)
+
+  Design:
+
+  types.ts:
+  ```ts
+  export type DeviceStatus = 'good' | 'warning' | 'serious' | 'critical' | 'offline'
+  export type DeviceKind = 'camera' | 'switch' | 'fridge' | 'thermostat' | 'intercom'
+  export interface Site { id: string; name: string }
+  export interface Reading { deviceId: string; timestamp: number; metrics: Record<string, number> }
+  ```
+
+  Hmm, per-kind metrics — better to have a typed metric shape per kind? Keep it simple but typed. Option: `metrics: Record<string, number>` is simple but weak. Better: discriminated-ish. Let's define per-kind metric interfaces:
+
+  ```ts
+  export interface CameraMetrics { uptimePct: number; bitrateMbps: number }
+  export interface SwitchMetrics { loadAmps: number }
+  export interface FridgeMetrics { temperatureC: number }
+  export interface ThermostatMetrics { setpointC: number; actualC: number }
+  export interface IntercomMetrics { callsLastHour: number; signalDbm: number }
+  export type DeviceMetrics = CameraMetrics | SwitchMetrics | FridgeMetrics | ThermostatMetrics | IntercomMetrics
+  ```
+
+  And Reading<DeviceKind>? Simplest: Reading has `kind` and `metrics: DeviceMetrics`. Device:
+
+  ```ts
+  export interface Device {
+    id: string
+    name: string
+    kind: DeviceKind
+    siteId: string
+    expectedIntervalSec: number
+    history: Reading[]  // chronological
+  }
+  ```
+
+  Actually maybe keep history separate? Keeping history on the device is fine and simple.
+
+  deriveStatus(device, latestReading, now): 
+  - if now - latestReading.timestamp > expectedIntervalSec * someFactor → 'offline'. Spec: "a device whose last message is older than its expected interval becomes 'offline'". So strictly older than expectedIntervalSec → offline? That seems harsh (a device reporting every 5 min would go offline between readings... no, expected interval means it reports every interval; if last message older than interval, it missed a beat → offline). Use a small grace, e.g. 1.5× interval? The spec says "older than its expected interval becomes 'offline'". I'll use > interval * 1.5 for believability? No — follow spec literally: older than expected interval → offline. But then to have non-offline devices, latest readings must be within interval. That's fine; the generator makes "healthy" devices have last reading within their interval. I'll add a modest grace multiplier of 1.5 and document it? Hmm, acceptance is judged by orchestrator against BRIEF. The prompt says "implementing the rule that a device whose last message is older than its expected interval becomes 'offline'". Literal: age > interval → offline. I'll do literal with maybe grace = interval (i.e., offline when age > 2× interval? No). Keep literal: `ageSec > device.expectedIntervalSec → 'offline'`. Simple and matches spec.
+
+  Then status from metrics per kind:
+  - fridge: temperatureC — safe ≤5°C (typical fridge 0-5). good ≤5, warning ≤7, serious ≤9, critical >9.
+  - thermostat: |actualC - setpointC| — good ≤1, warning ≤2.5, serious ≤4, critical >4.
+  - camera: uptimePct and bitrateMbps. good uptime ≥99 & bitrate ≥3; warning uptime ≥97 or bitrate ≥2; serious ≥94 or ≥1; critical else.
+  - switch: loadAmps vs rated (say 16A or 32A). Add ratedAmps to device? Put ratedAmps in device for switch. Simpler: thresholds good ≤12, warning ≤14.5, serious ≤15.5, critical >15.5 (assuming 16A). Devices can have ratedAmps field.
+  - intercom: signalDbm good ≥-65, warning ≥-75, serious ≥-85, critical < -85. callsLastHour is secondary.
+
+  deriveStatus computes from metrics + offline rule. Pure function.
+
+  PRNG: mulberry32 in prng.ts, plus helpers: pick, range, normal-ish (sum of uniforms).
+
+  Generator: SITES: 6 named sites, e.g. "Harbour Quay", "Northgate Tower", "Depot 4", "Riverside Annex", "Old Mill Works", "Central Plant". 240 devices distributed: e.g. per-site counts varying. Kinds counts: camera 72, switch 60, fridge 36, thermostat 42, intercom 30 = 240.
+
+  Expected intervals per kind: camera 30s, switch 60s, fridge 300s, thermostat 120s, intercom 60s. With jitter per device.
+
+  History: 24h backfill. Sensible resolution: 5-minute readings → 288 points × 240 devices = 69k readings, fine. But expected interval is seconds; history at 5min resolution is a downsample — "at a sensible resolution" so 5min is fine. Drift: random walk around base + daily cycle (sine) for temperature.
+
+  Bad shape: mark some devices as "troubled" (e.g. 8% with degraded metrics, a few with last reading stale → offline). Deterministic via PRNG.
+
+  Also the "recovered in the last hour" query needs history of statuses — a device whose earlier readings were bad and recent are good. We can compute status for historical readings with deriveStatus at their timestamps (offline rule needs "now" — for historical status, evaluate with now = reading.timestamp, and staleness = gap from previous reading?). Simpler: a helper statusAt(device, index) that derives from metric only, ignoring offline (or considering gap between readings). Let me define deriveStatus(device, reading, now) — for a historical reading, now = reading.timestamp means staleness=0 → not offline, metric-based status. Good enough for "recovered" predicate: find devices where some reading in last 6h was serious/critical and latest is good.
+
+  To make recovered devices exist, generator should give some devices a bad patch in mid-history that resolved.
+
+  useLiveFeed hook: 
+  ```ts
+  export function useLiveFeed(tickMs = 2000): { fleet: Device[]; lastUpdated: number; paused: boolean }
+  ```
+  Wait — paused flag but read-only... pausing the feed is a UI control over simulation, allowed ("Expose ... a paused flag"). It's not commanding devices. Should the hook expose setPaused? "Expose the current fleet, a lastUpdated timestamp, and a paused flag." Pausing a live feed display is a view concern, not writing to devices. I'll expose `paused` and `setPaused`? The constraint says nothing that lets a user create/edit/delete/command a device. Pause is on the local simulation feed, not devices. I'll expose paused and a toggle — hmm, to be safe, expose `paused` and `setPaused` since it's obviously simulation control. Yes I'll include setPaused; it's not a device action.
+
+  Live tick: on interval, for each device due (based on expectedIntervalSec) push a new reading continuing the drift. To keep deterministic-ish but live, can use a continuing mulberry32 seeded from seed + tick count. Not required deterministic across sessions for live feed, but no Math.random allowed. So use a module-level PRNG instance seeded with seed+1.
+
+  Fleet state: initialize with generateFleet(seed). Each tick, advance simulation time by e.g. 30s of simulated time per tick? Or real time? Simulating "near-real-time feed": each tick (2s real), advance some devices. Simplest: each tick, pick devices whose next report is due in simulated time, generate reading at new timestamp = lastTimestamp + expectedInterval. Also history grows unboundedly — cap at 24h (drop old). 
+
+  Design: hook keeps fleet in state; tick handler maps over devices, and for each due device produces new reading appended, trimming history older than 24h.
+
+  Memory: 240 devices × 288 readings ≈ 69k objects, fine.
+
+  queries.ts: 8 queries:
+  1. offline-15: devices offline over 15 minutes — predicate(device, ctx) where ctx = { now }. Needs lastReading age > 15min and status offline.
+  2. fridges-hot: fridges above safe temp (latest temperatureC > 5).
+  3. critical-here: devices reporting critical at "this site" — needs siteId param? Pre-defined query "devices reporting critical at this site" — pick a site, e.g. the largest/headquarters. Make it fixed: siteId 'northgate-tower' or similar constant. Hmm, predicate over the fleet — takes (device, now). I'll bake site into description. Let's define a PRIMARY_SITE constant, e.g. first site. 
+  4. cameras-degraded-bitrate: cameras with bitrate < threshold but still reporting.
+  5. recovered-last-hour: had serious/critical in history within last 6h... "recovered in the last hour": was bad, latest good, and the recovery (first good reading after bad) happened within last hour.
+  6. stale-signal intercoms: intercoms with weak signal.
+  7. overloaded switches: switches above warning load.
+  8. thermostats-off-target: |actual-setpoint| > 2.5.
+
+  Predicate signature: `(device: Device, now: number) => boolean`. Pure predicates over the fleet. 
+
+  Where does latestReading come from? helper `latestReading(device)` = device.history[history.length-1].
+
+  File layout:
+  - types.ts
+  - prng.ts
+  - constants.ts? fold sites into fleet.ts.
+  - fleet.ts (generateFleet, SITES)
+  - status.ts (deriveStatus, metricStatus helpers)
+  - useLiveFeed.ts
+  - queries.ts
+  - index.ts barrel
+
+  Check tsconfig strictness quickly, then write. Let me check tsconfig.app.json.
+
+• Now let me check the TypeScript config and tailwind setup to match conventions.
+
+• Strict mode with noUnusedLocals/Parameters. Now write the data layer files.
+
+  Files:
+
+  1. `frontend/src/data/types.ts`
+  2. `frontend/src/data/prng.ts`
+  3. `frontend/src/data/fleet.ts`
+  4. `frontend/src/data/status.ts`
+  5. `frontend/src/data/useLiveFeed.ts`
+  6. `frontend/src/data/queries.ts`
+  7. `frontend/src/data/index.ts`
+
+  Design details:
+
+  types.ts:
+  ```ts
+  export type DeviceStatus = 'good' | 'warning' | 'serious' | 'critical' | 'offline'
+  export type DeviceKind = 'camera' | 'switch' | 'fridge' | 'thermostat' | 'intercom'
+
+  export interface Site { id: string; name: string }
+
+  export interface CameraMetrics { uptimePct: number; bitrateMbps: number }
+  export interface SwitchMetrics { loadAmps: number }
+  export interface FridgeMetrics { temperatureC: number }
+  export interface ThermostatMetrics { setpointC: number; actualC: number }
+  export interface IntercomMetrics { callsLastHour: number; signalDbm: number }
+  export type DeviceMetrics = CameraMetrics | SwitchMetrics | FridgeMetrics | ThermostatMetrics | IntercomMetrics
+
+  export interface Reading {
+    deviceId: string
+    timestamp: number // ms epoch
+    metrics: DeviceMetrics
+  }
+
+  export interface Device {
+    id: string
+    name: string
+    kind: DeviceKind
+    siteId: string
+    expectedIntervalSec: number
+    ratedAmps?: number // switches only
+    history: Reading[] // chronological, oldest first
+  }
+  ```
+
+  prng.ts: mulberry32 + helpers range, int, pick, normal-ish.
+
+  ```ts
+  export type Rng = () => number
+  export function mulberry32(seed: number): Rng {
+    let a = seed >>> 0
+    return function () {
+      a |= 0; a = (a + 0x6d2b79f5) | 0
+      let t = Math.imul(a ^ (a >>> 15), 1 | a)
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+    }
+  }
+  export function range(rng, min, max) { return min + rng() * (max - min) }
+  export function int(rng, min, max) { return Math.floor(range(rng, min, max + 1)) }
+  export function pick<T>(rng, items: readonly T[]): T { return items[Math.floor(rng() * items.length)] }
+  export function normal(rng, mean, sd) { // sum of 3 uniforms approx
+    return mean + (rng() + rng() + rng() - 1.5) / 1.5 * sd
+  }
+  ```
+
+  fleet.ts:
+  - SITES: 6 sites with names.
+  - KIND_COUNTS.
+  - `generateFleet(seed = DEFAULT_SEED): Device[]`
+  - Per device: history backfill 24h at HISTORY_STEP_MS = 5min.
+  - Generate per-device baseline, profile flag: 'healthy' | 'degraded' | 'offline-late' | 'recovered'.
+  - Generate metric per kind with drift + daily cycle.
+  - nextMetric(state) exported for live feed: `nextReading(device, rng): Reading` producing the next reading after latest.
+
+  Metric generator per kind — a function makeStepper(kind, rng, profile) returning step(t) producing metrics. For live feed reuse, maybe simpler: `nextMetrics(kind, prev, profile, rng, t)` — drift from previous with mean reversion to baseline.
+
+  I'll structure:
+
+  ```ts
+  interface SimProfile { mode: 'healthy'|'degraded'|'flaky'|'offline'; baseline: Record<string, number> }
+  ```
+
+  Keep it simpler: per device, store hidden sim state? Device objects are data; the live feed needs continuity. I'll keep a module-level Map<string, SimState> keyed by device id, built inside generateFleet, and expose `advanceFleet(fleet, rng)`. Hmm, but fleet built once. Alternatively make nextMetrics(kind, prevReading.metrics, rng, phase) with mean reversion to a per-kind typical baseline — drift continuity preserved from prev value. That works without storing state. For degraded devices, their values already sit at bad level; mean reversion keeps them there. Phase for daily cycle: compute from timestamp. Good — pure function of prev metrics + timestamp.
+
+  Recovered devices: bad patch mid-history resolved; live continuation is healthy.
+
+  Implementation of generateFleet:
+
+  ```ts
+  export const FLEET_SEED = 1337
+  export const HISTORY_HOURS = 24
+  export const HISTORY_STEP_SEC = 300
+
+  const SITES: Site[] = [...]
+  const KIND_PLAN: [DeviceKind, number][] = [['camera',72],['switch',60],['fridge',36],['thermostat',42],['intercom',30]]
+
+  const KIND_INTERVAL_SEC: Record<DeviceKind, number> = { camera: 30, switch: 60, fridge: 300, thermostat: 120, intercom: 60 }
+  ```
+
+  Device naming: e.g. `CAM-HQ-014`. Site assignment round-robin weighted? Give each site explicit device counts summing 240: e.g. [56, 48, 40, 36, 32, 28]. Assign devices to sites via round-robin shuffled by rng — simpler: assign site by cycling with jitter. Just do: build array of site ids with counts, then iterate devices picking siteIds[i % ...]? Deterministic with rng: shuffle site pool with rng.
+
+  Profiles: for each device, roll rng: ~80% healthy, ~9% degraded (metrics in serious/critical band), ~5% flaky (warning), ~3% offline (last reading stale by 2-6× interval... actually offline needs age > interval; make some very stale > 15min for the query), ~3% recovered (bad patch 2-5h ago, good since).
+
+  Ensure enough bad devices: "a few devices in genuinely bad shape". 9% of 240 ≈ 21 degraded — fine.
+
+  History generation per device:
+  - now fixed at generation time? Deterministic requires fixed "now"? If now = Date.now(), fleet values deterministic but timestamps differ each run. "Same seed MUST always produce the same fleet" — timestamps anchored to Date.now() would break strict determinism. Use a fixed anchor: `const ANCHOR = Date.UTC(2026, 8, 18, 12, 0, 0)`? But then all devices instantly offline relative to real now. Hmm. The live feed advances from there though. deriveStatus(device, latest, now) with real now would mark everything offline since anchor is fixed in past.
+
+  Options: anchor history end to a module-level "simNow" initialized at Date.now() — deterministic values, timestamps relative to load time. The acceptance says "feed is deterministic from a seed" — metric values and structure deterministic; timestamps relative to now is the sensible interpretation. I'll define `simNow = Date.now()` rounded down to the history step; metric values are seeded. Document it.
+
+  Actually to be safe: generateFleet(seed, now = Date.now()). Same seed+same now → identical. Default now is wall clock so statuses work.
+
+  Live feed: continues from last reading timestamps, advancing sim time per tick: each tick (default 2s), advance each due device's next report. Track per-device next due = lastTimestamp + expectedInterval. Simulated clock: simNow starts at fleet end time, advances by e.g. 15 sim-seconds per real 2s tick? If sim advances at real rate, a camera reporting every 30s yields an update every 15 ticks for that device. Feels slow for a demo but it's "near-real-time". Speed it up: SIM_SECONDS_PER_TICK = 30. Each tick, devices whose next due ≤ simNow+step get a reading. lastUpdated = simNow. deriveStatus uses simNow (the feed's now), which the hook exposes as lastUpdated.
+
+  Hook signature:
+
+  ```ts
+  export interface LiveFeed {
+    fleet: Device[]
+    lastUpdated: number
+    paused: boolean
+    setPaused: (paused: boolean) => void
+  }
+  export function useLiveFeed(tickMs = 2000, seed = FLEET_SEED): LiveFeed
+  ```
+
+  useState fleet initialized lazily: `useState(() => generateFleet(seed))`. Sim clock in a ref. Interval in useEffect [tickMs, paused], clears on cleanup. Each tick: setFleet(prev => advanceFleet(prev, stepSec)). advanceFleet maps devices; for due devices append nextReading and trim history to 24h.
+
+  nextReading: timestamp = prev.timestamp + interval (may loop multiple steps if step > interval? step 30s ≥ intervals 30s, so typically one; use while loop to catch up). Use a module-level rng for live continuation: created per fleet instance... module-level `let liveRng = mulberry32(seed ^ 0x9e3779b9)`. But multiple hook instances (StrictMode double-mount) share module rng — fine.
+
+  StrictMode double-invokes effects in dev; cleanup clears interval, second mount creates new interval. Build is what matters.
+
+  Derive status (status.ts):
+
+  ```ts
+  export function latestReading(device: Device): Reading | undefined
+  export function deriveStatus(device, reading, now): DeviceStatus {
+    if (!reading) return 'offline'
+    const ageSec = (now - reading.timestamp) / 1000
+    if (ageSec > device.expectedIntervalSec) return 'offline'
+    return metricStatus(device.kind, reading.metrics, device)
+  }
+  ```
+
+  Wait — literal rule "older than its expected interval becomes offline" means healthy devices need readings fresher than interval. With sim advancing 30s/tick and camera interval 30s, age oscillates 0..30s; at age exactly = interval+ it's offline... each tick the reading time = simNow-aligned? If readings emitted at due times and simNow advances past interval before next emission, flicker. Add catch-up: emit reading whenever dueTime <= simNow, then a healthy device's latest age < interval + step. Hmm, flicker between offline and good is bad.
+
+  Mitigation: allow grace: offline when age > interval * 1.5? The spec is explicit but a grace factor is standard engineering. I'll implement `OFFLINE_GRACE = 1.5` — offline when age > 1.5 × interval, documented. Hmm, orchestrator may check literally. Alternative: step sim clock so due times always land: advance simNow in increments, and emit due readings at their exact due timestamps ≤ simNow. Then healthy latest age ≤ step? No: age = simNow - lastDue. If interval=30, step=30: dues at t, t+30...; simNow = anchor+30k. After tick, simNow = anchor+30k, last due emitted at simNow exactly (due ≤ simNow). So age = 0 right after emission. Next tick, age = 30 = interval, not > interval → still good (strictly greater). Then emit again. So healthy device oscillates age 0..30 ≤ interval → never offline. 
+
+  But intervals with jitter per device (e.g. 30 ± 6s) don't divide the step. Interval 24s: dues at anchor+24k; simNow steps 30. age can reach up to 30 after emission at ≤ simNow... e.g., dues at 24,48,72; simNow at 60 → last emitted 48, age 12. simNow=90 → emitted 72, age 18. Max age < interval + step - interval... general bound: age ≤ step (since at least one due lands within the last step if interval ≤ step). If interval > step (fridge 300s), age can approach interval between reports: at simNow just before next due, age ≈ interval - ε < interval → fine. So with catch-up emission, healthy devices always have age < max(interval, step) ... actually age < interval always right before a due? If dues are every interval, and simNow jumps by step ≤ interval: worst case just after a simNow jump, last due was at simNow_prev - r... Let me bound: dues at multiples (offset). Latest due ≤ simNow. age = simNow - latestDue < interval always (because latestDue > simNow - interval since dues occur every interval and dues ≤ simNow... the previous due is at latestDue - interval... hmm, latestDue is the greatest due ≤ simNow, so next due = latestDue + interval > simNow, so latestDue > simNow - interval, i.e., age < interval). Yes! age < interval for any device reporting on schedule, regardless of step. So strict literal rule works: catch-up emission with dues at exact multiples of interval. 
+
+  So per device: `nextDueAt` maintained. advanceFleet(simNow): for each device, while nextDueAt <= simNow: append reading at nextDueAt (skip if device is "offline-sim" — offline devices stop reporting; but then they'd recover? Keep some permanently dark, flaky ones miss reports occasionally). Store sim state per device: Map in module keyed by device id: { nextDueAt, silent: boolean, missRate }.
+
+  Simplest: store sim state inside a closure created by a `createFeedSimulator(seed)` factory that returns { fleet, tick() }? But hook spec: "useLiveFeed hook: pushes new readings on an interval". I'll create a module `feed.ts`? Keep in useLiveFeed.ts: a class/factory `createFleetFeed(seed)` returning { fleet, advance(stepSec) }. The generator (fleet.ts) exposes generateFleet; sim state (nextDueAt, silent) needs to be known by the advancer. Store it in a WeakMap<Device, SimState> inside fleet.ts, populated by generateFleet, with advanceFleet exported from fleet.ts. WeakMap avoids polluting Device type.
+
+  Hmm wait, but Device.history mutation — advanceFleet should return new array (immutable update) for React state.
+
+  Recovered/degraded profiles: for live continuation, degraded devices keep producing bad values (mean reversion to their baseline). Offline devices: silent → no readings → stay offline. Flaky: occasionally skip a due (miss), causing brief staleness — with grace they may flick offline occasionally; that's realistic. Keep missRate small.
+
+  Profile storage: per-device baseline + mode in the WeakMap.
+
+  metricStatus thresholds (status.ts), kind-specific:
+
+  ```ts
+  function cameraStatus(m: CameraMetrics) {
+    if (m.uptimePct < 94 || m.bitrateMbps < 1) return 'critical'
+    if (m.uptimePct < 97 || m.bitrateMbps < 2) return 'serious'
+    if (m.uptimePct < 99 || m.bitrateMbps < 3) return 'warning'
+    return 'good'
+  }
+  ```
+  fridge: temp > 9 critical; >7 serious; >5 warning; else good.
+  thermostat: deviation >4 critical; >2.5 serious; >1 warning.
+  switch: ratio = loadAmps / ratedAmps(16 default): >0.95 critical; >0.9 serious; >0.8 warning.
+  intercom: signalDbm < -85 critical; < -75 serious; < -65 warning.
+
+  Baselines per kind:
+  - camera: uptime 99.2-99.9, bitrate 4-8 Mbps.
+  - switch: load 3-10 A of 16.
+  - fridge: temp 3.5 ±0.8, daily cycle ±0.5.
+  - thermostat: setpoint 19-23, actual = setpoint + small error.
+  - intercom: signal -55..-70, calls 0-12/hr with daily pattern.
+
+  Degraded baselines:
+  - camera: uptime 92-96, bitrate 0.6-1.8.
+  - fridge: temp 8-12.
+  - thermostat: actual off by 4-7.
+  - switch: load 14.5-16.5.
+  - intercom: signal -78..-92.
+
+  History generation: for t from start to end step 300s: value = mean-revert random walk: v += (baseline - v)*0.05 + normal(0, sd). Plus daily sine for temp/calls.
+
+  Recovered profile: bad patch between T-6h and T-1.5h: during patch use degraded baseline; after, healthy.
+
+  Offline profile: stop emitting at some point: lastTimestamp = end - staleFor where staleFor ∈ [20min .. 10h]. Ensure several > 15min for query 1.
+
+  Offline devices: emit history until their cutoff.
+
+  Queries (queries.ts):
+
+  ```ts
+  export interface FleetQuery {
+    id: string
+    label: string
+    description: string
+    predicate: (device: Device, now: number) => boolean
+  }
+  ```
+
+  1. `offline-15min` — "Silent for over 15 minutes": status offline && age > 15min.
+  2. `fridges-above-safe` — kind fridge && temperatureC > 5 (and reporting? include only non-offline — a fridge both offline and hot would double count; keep predicate simple: kind && temp > 5 && status !== 'offline'? The query is "fridges above safe temperature" — last reported temp. I'll not exclude offline; description says "last reported".)
+  3. `critical-at-hq` — status critical && siteId === SITES[0].id.
+  4. `cameras-degraded-bitrate` — kind camera && bitrateMbps < 2 && status !== 'offline'.
+  5. `recovered-last-hour` — latest status good && exists reading in last 6h with serious/critical metric status && no bad reading in last hour. Implement helper.
+  6. `weak-intercom-signal` — kind intercom && signalDbm < -75.
+  7. `overloaded-switches` — kind switch && load > 0.9*rated.
+  8. `thermostats-off-target` — kind thermostat && |actual-setpoint| > 2.5.
+
+  For predicate "now" usage: pass lastUpdated. Pure predicates over (device, now) — deterministic given inputs. Good.
+
+  queries.ts needs latestReading + deriveStatus from status.ts.
+
+  index.ts barrel exporting everything.
+
+  Also copy rules — labels from technician's side.
+
+  Now the generator code. Let me write it.
+
+  ```ts
+  // fleet.ts
+  import { mulberry32, range, int, normal, pick, type Rng } from './prng'
+  import type { Device, DeviceKind, DeviceMetrics, Reading, Site } from './types'
+
+  export const FLEET_SEED = 20260918
+  export const FLEET_SIZE = 240
+  export const HISTORY_HOURS = 24
+  export const HISTORY_STEP_SEC = 300
+  export const LIVE_STEP_SEC = 30
+
+  export const SITES: Site[] = [
+    { id: 'harbour-quay', name: 'Harbour Quay' },
+    { id: 'northgate-tower', name: 'Northgate Tower' },
+    { id: 'depot-4', name: 'Depot 4' },
+    { id: 'riverside-annex', name: 'Riverside Annex' },
+    { id: 'old-mill-works', name: 'Old Mill Works' },
+    { id: 'central-plant', name: 'Central Plant' },
+  ]
+
+  const KIND_PLAN: ReadonlyArray<readonly [DeviceKind, number]> = [
+    ['camera', 72], ['switch', 60], ['fridge', 36], ['thermostat', 42], ['intercom', 30],
+  ]
+
+  const BASE_INTERVAL_SEC: Record<DeviceKind, number> = {
+    camera: 30, switch: 60, fridge: 300, thermostat: 120, intercom: 60,
+  }
+
+  const SITE_COUNTS = [56, 48, 40, 36, 32, 28] // sums to 240
+  ```
+
+  Profile:
+
+  ```ts
+  type ProfileMode = 'healthy' | 'flaky' | 'degraded' | 'recovered' | 'offline'
+
+  interface SimState {
+    mode: ProfileMode
+    baseline: Record<string, number>
+    degradedBaseline: Record<string, number>
+    nextDueAt: number
+    missRate: number
+    cutoffAt: number // for offline devices: last timestamp they report
+    patchStart: number // for recovered
+    patchEnd: number
+  }
+
+  const simStates = new WeakMap<Device, SimState>()
+  ```
+
+  Baselines:
+
+  ```ts
+  function baselinesFor(kind, rng): { healthy: Record<string, number>, degraded: Record<string, number> } {
+    switch (kind) {
+      case 'camera': return {
+        healthy: { uptimePct: range(rng, 99.2, 99.9), bitrateMbps: range(rng, 4, 8) },
+        degraded: { uptimePct: range(rng, 91, 96), bitrateMbps: range(rng, 0.5, 1.8) },
+      }
+      case 'switch': {
+        const rated = pick(rng, [16, 16, 16, 32])
+        healthy load: rated * range(0.2, 0.65); degraded: rated * range(0.9, 1.05)
+      }
+      case 'fridge': healthy { temperatureC: range(2.5, 4.5) }, degraded { range(8, 12) }
+      case 'thermostat': setpoint = int(rng, 19, 23); healthy { setpointC: sp, actualC: sp + range(-0.5, 0.5) }, degraded { setpointC: sp, actualC: sp + pick([-1,1]) * range(4, 7) }
+      case 'intercom': healthy { callsLastHour: 0, signalDbm: range(-68, -55) }, degraded { callsLastHour: 0, signalDbm: range(-92, -78) }
+    }
+  }
+  ```
+
+  Metric stepping — need deterministic value generation: `sampleMetrics(kind, baseline, rng, t)` producing value with noise + daily cycle. To make history look like drift, do a random walk: keep `current` value per metric across the loop. For live continuation, advanceFleet uses the sim state + current latest metrics.
+
+  Simplify: a function `stepMetrics(kind, prev: Record<string,number>, target: Record<string,number>, rng, t): DeviceMetrics` doing mean reversion:
+
+  ```ts
+  const v = prev + (target - prev) * 0.08 + normal(rng, 0, sd) + dailyCycle adjustments
+  ```
+
+  For thermostats, setpoint constant: only actual drifts toward target actual. For intercom callsLastHour: absolute from daily pattern, not walk: `max(0, round(base * (0.5 + 0.5*sin(...)) + poissonish))`.
+
+  First reading: start at target.
+
+  Metric noise sds: uptimePct 0.15, bitrate 0.3, load 0.4, temp 0.15, actual 0.2, signal 1.5.
+
+  Daily cycles: fridge temp += 0.4*sin(2π*(t/86400) - phase) with random phase; intercom calls pattern peaking at ~10:00 and ~17:00 — one sine is fine.
+
+  Clamping: uptimePct [0,100], bitrate [0.1, 12], load [0, rated*1.2], temp [-10, 20], signal [-100, -30].
+
+  Device ids & names: kind prefixes: CAM, SW, FRG, THM, INT. Name like `Cam HQ-014`? Technician-facing names: e.g. "Camera HQ-014". Compose: site short code (HQ, NT, D4, RA, OM, CP). Name: `${kindLabel} ${siteCode}-${nnn}`.
+
+  Device kind metadata — export KIND_LABELS maybe useful for T3. Keep minimal but a `DEVICE_KIND_LABELS: Record<DeviceKind,string>` is handy; T3 can add. Skip to stay minimal? It's data-layer-ish; add small labels map. Fine, add in types.ts? Put in fleet.ts... types.ts keeps pure types. I'll put labels in types.ts as const — acceptable.
+
+  generateFleet:
+
+  ```ts
+  export function generateFleet(seed: number = FLEET_SEED, now: number = Date.now()): Device[] {
+    const rng = mulberry32(seed)
+    const end = Math.floor(now / (HISTORY_STEP_SEC*1000)) * HISTORY_STEP_SEC*1000
+    const start = end - HISTORY_HOURS*3600*1000
+
+    // site pool
+    const sitePool: string[] = []
+    SITES.forEach((s, i) => { for (let k=0;k<SITE_COUNTS[i];k++) sitePool.push(s.id) })
+    // shuffle
+    for (let i = sitePool.length-1; i>0; i--) { const j = Math.floor(rng()*(i+1)); [sitePool[i],sitePool[j]]=[sitePool[j],sitePool[i]] }
+
+    const devices: Device[] = []
+    const counters: Record<string, number> = {}
+    let idx = 0
+    for (const [kind, count] of KIND_PLAN) {
+      for (let n = 0; n < count; n++) {
+        const siteId = sitePool[idx++]
+        const siteCode = ...
+        const seq = (counters[siteCode+kind] = (counters[siteCode+kind] ?? 0) + 1)
+        const id = `${PREFIX[kind]}-${siteCode}-${String(seq).padStart(3,'0')}`
+        ...
+      }
+    }
+    return devices
+  }
+  ```
+
+  Profile roll:
+
+  ```ts
+  const roll = rng()
+  mode = roll < 0.80 ? 'healthy' : roll < 0.88 ? 'flaky' : roll < 0.96 ? 'degraded' : roll < 0.98 ? 'recovered' : 'offline'
+  ```
+
+  That gives ~7-8 degraded per... 8% of 240 ≈ 19 degraded, flaky 19, recovered 5, offline 5. Good. But ensure offline count ≥ a few — expectation ~4.8, could be 2-3. Fine, but the offline-15min query needs some; staleFor for offline = range(20min, 10h), all >15min. OK.
+
+  Also 'flaky': missRate 0.05, and history has gaps — a missed reading = gap of 2 intervals... but history resolution is 5min and intervals are seconds — history gaps don't represent missed interval reports. Hmm, history is downsampled telemetry. Fine — history is the 5-min rollup; offline is judged by last message timestamp. Flaky devices: occasionally skip live dues → temporarily exceed interval → offline flickers. OK.
+
+  Actually wait: offline rule with literal `age > interval`: flaky device missing one 30s report → age 60 > 30 → offline briefly. Realistic "flapping". Fine.
+
+  For history of offline devices: cutoffAt = end - range(20min, 10h)*... last reading at cutoff.
+
+  History loop:
+
+  ```ts
+  const stepMs = HISTORY_STEP_SEC*1000
+  let prev = sample at start from baseline
+  for (let t = start; t <= effectiveEnd; t += stepMs) {
+    const target = targetAt(mode, t, ...) // recovered: degraded baseline during patch
+    prev = stepMetrics(kind, prev, target, rng, t)
+    history.push({ deviceId, timestamp: t, metrics: prev })
+  }
+  ```
+
+  Recovered patch: patchStart = end - range(4, 8)h, patchEnd = end - range(0.5, 1.2)h — recovered within the last hour for some. To guarantee "recovered in last hour" matches, set patchEnd = end - range(10, 55)min for recovered mode. Yes.
+
+  SimState for live: nextDueAt = lastHistoryTimestamp + interval... but history resolution (5min) vs interval (30s) — the last history point is a rollup; treat live feed as continuing raw reports from `end`. nextDueAt = end + interval (jitter). Degraded devices keep targeting degraded baseline; recovered target healthy; offline: silent forever (nextDueAt = Infinity).
+
+  advanceFleet:
+
+  ```ts
+  export function advanceFleet(fleet: Device[], rng: Rng, toTime: number): Device[] {
+    return fleet.map(d => {
+      const st = simStates.get(d)
+      if (!st || st.nextDueAt > toTime) return d
+      const history = [...d.history]
+      let latest = history[history.length-1]
+      let changed = false
+      while (st.nextDueAt <= toTime) {
+        if (!(st.mode === 'flaky' && rng() < st.missRate)) {
+          const target = st.mode === 'degraded' ? st.degradedBaseline : st.baseline
+          const metrics = stepMetrics(d.kind, latest.metrics, target, rng, st.nextDueAt)
+          latest = { deviceId: d.id, timestamp: st.nextDueAt, metrics }
+          history.push(latest)
+          changed = true
+        }
+        st.nextDueAt += d.expectedIntervalSec * 1000
+      }
+      if (!changed) return d
+      const cutoff = toTime - HISTORY_HOURS*3600*1000
+      let first = 0
+      while (first < history.length && history[first].timestamp < cutoff) first++
+      return { ...d, history: history.slice(first) }
+    })
+  }
+  ```
+
+  Note stepMetrics takes prev metrics as DeviceMetrics → need Record<string,number> access. Cast: `prev as unknown as Record<string, number>` and per-kind handle keys. Write stepMetrics with explicit per-kind logic:
+
+  ```ts
+  function stepMetrics(kind, prev: DeviceMetrics, target: Record<string, number>, rng, t): DeviceMetrics {
+    switch (kind) {
+      case 'camera': {
+        const p = prev as CameraMetrics
+        return { uptimePct: clamp(walk(p.uptimePct, target.uptimePct, 0.15, rng), 0, 100), bitrateMbps: clamp(walk(p.bitrateMbps, target.bitrateMbps, 0.3, rng) , 0.1, 12) }
+      }
+      ...
+    }
+  }
+  ```
+
+  where walk = p + (target - p)*0.08 + normal(rng, 0, sd) (+ daily cycle for temp).
+
+  Fridge temp cycle: `+ 0.4 * Math.sin((t / 86400000) * 2 * Math.PI + phase)` — phase per device; store phase in baseline record (e.g. baseline.phase). OK, add `_phase` key.
+
+  Intercom calls: not a walk — recompute: `Math.max(0, Math.round(8 * Math.max(0, Math.sin(...))^2 ... ))`. Simpler: base rate per device (0-3 overnight) plus business-hours bump: hourOfDay from t. `const h = new Date(t).getUTCHours()`? Deterministic given t. calls = max(0, round(normal(baseline.callsBase * dayFactor(h), 1))). Put callsBase in baseline.
+
+  Thermostat: setpoint stays fixed (from target.setpointC), actual walks toward target.actualC.
+
+  useLiveFeed.ts:
+
+  ```ts
+  import { useEffect, useRef, useState } from 'react'
+  import { advanceFleet, generateFleet, FLEET_SEED, LIVE_STEP_SEC } from './fleet'
+  import { mulberry32, type Rng } from './prng'
+  import type { Device } from './types'
+
+  export interface LiveFeedState {
+    fleet: Device[]
+    lastUpdated: number
+    paused: boolean
+    setPaused: (paused: boolean) => void
+  }
+
+  export function useLiveFeed(tickMs = 2000, seed: number = FLEET_SEED): LiveFeedState {
+    const [fleet, setFleet] = useState<Device[]>(() => generateFleet(seed))
+    const [lastUpdated, setLastUpdated] = useState<number>(() => Date.now())
+    const [paused, setPaused] = useState(false)
+    const simRef = useRef<{ now: number; rng: Rng } | null>(null)
+    if (simRef.current === null) {
+      // align with generated fleet end? generateFleet used Date.now() internally...
+    }
+  }
+  ```
+
+  Problem: hook needs to know the fleet's end time to start sim clock. Compute from fleet: max of latest timestamps? Offline devices end earlier. Use `fleetEnd = max over devices of last history timestamp` — healthy devices end at `end`. So:
+
+  ```ts
+  const simNow0 = Math.max(...fleet.map(d => d.history[d.history.length-1]?.timestamp ?? 0))
+  ```
+
+  But simRef init inside render — with StrictMode double render fine. Set in useState initializer combined? Do:
+
+  ```ts
+  const simRef = useRef<{ now: number; rng: Rng }>()
+  ```
+
+  Init lazily in effect: if (!simRef.current) simRef.current = { now: fleetEnd(fleet), rng: mulberry32(seed ^ 0x9e3779b9) }.
+
+  Effect:
+
+  ```ts
+  useEffect(() => {
+    if (paused) return
+    if (!simRef.current) simRef.current = { now: fleetEnd(fleet), rng: mulberry32(seed ^ 0x9e3779b9) }
+    const id = window.setInterval(() => {
+      const sim = simRef.current!
+      sim.now += LIVE_STEP_SEC * 1000
+      setFleet(prev => advanceFleet(prev, sim.rng, sim.now))
+      setLastUpdated(sim.now)
+    }, tickMs)
+    return () => window.clearInterval(id)
+  }, [tickMs, paused, seed])
+  ```
+
+  Note: `fleet` in closure for init — use a lazy init of simRef with the initial fleet only. Use a ref initializer pattern:
+
+  ```ts
+  const initial = useRef<{ fleet: Device[]; end: number } | null>(null)
+  if (initial.current === null) { ... }
+  ```
+
+  Cleaner: create simRef initial value synchronously during first render:
+
+  ```ts
+  const simRef = useRef<Sim | null>(null)
+  if (simRef.current === null) simRef.current = { now: 0, rng: mulberry32(seed ^ 0x9e3779b9) }
+  ```
+
+  with now=0 meaning "uninitialized"; in the tick, if sim.now === 0, set sim.now = fleetEnd(fleet via functional set). Hmm — setFleet(prev => { if (sim.now === 0) sim.now = fleetEnd(prev); sim.now += step; return advanceFleet(prev, sim.rng, sim.now) }). lastUpdated init: fleetEnd(initial fleet) — compute in useState initializer:
+
+  ```ts
+  const [fleet, setFleet] = useState(() => generateFleet(seed))
+  const [lastUpdated, setLastUpdated] = useState(() => fleetEnd(fleet))
+  ```
+
+  Wait, useState initializers run in order, fleet available. Good. And sim clock start = lastUpdated. So:
+
+  ```ts
+  useEffect(() => {
+    if (paused) return
+    const rng = ... // needs to persist across effect re-runs (pause toggles) → keep in ref
+  ```
+
+  Keep rng in ref initialized once. sim now in ref too, init from lastUpdated? Refs init at first render; lastUpdated state initial = fleetEnd. So:
+
+  ```ts
+  const simRef = useRef<{ now: number; rng: Rng } | null>(null)
+  ...
+  useEffect(() => {
+    if (paused) return
+    if (simRef.current === null) {
+      simRef.current = { now: fleetEnd(fleet), rng: mulberry32(seed ^ 0x9e3779b9) }
+    }
+    const id = window.setInterval(() => { ... }, tickMs)
+    return () => window.clearInterval(id)
+  }, [paused, tickMs, seed])
+  ```
+
+  `fleet` dep missing — eslint would complain but no eslint in build; fine. To be tidy use a ref for fleetEnd init only; it's just initial. Acceptable.
+
+  StrictMode: effect mounts twice; first cleanup clears interval. simRef persists — fine.
+
+  queries.ts: 
+
+  ```ts
+  import { deriveStatus, latestReading, statusDuringWindow } from './status'
+  ...
+  export const PRIMARY_SITE_ID = SITES[0].id // 'harbour-quay'? 
+  ```
+
+  Hmm "critical at this site" — pick SITES find name 'Northgate Tower'? Customer is Northgate Facilities, so HQ site = 'northgate-tower'. I'll order SITES with northgate-tower first and use SITE_COUNTS accordingly. Let me reorder: northgate-tower (56), harbour-quay (48), depot-4 (40), riverside-annex (36), old-mill-works (32), central-plant (28).
+
+  For "recovered in the last hour" predicate:
+
+  ```ts
+  function recoveredLastHour(device, now) {
+    const latest = latestReading(device)
+    if (!latest || deriveStatus(device, latest, now) !== 'good') return false
+    const hourAgo = now - 3600e3, sixHoursAgo = now - 6*3600e3
+    let sawBad = false
+    for (const r of device.history) {
+      if (r.timestamp < sixHoursAgo) continue
+      const s = metricStatusOf(device, r)
+      if (s === 'serious' || s === 'critical') {
+        if (r.timestamp > hourAgo) return false // bad again recently
+        sawBad = true
+      }
+    }
+    return sawBad
+  }
+  ```
+
+  Need metric-only status export from status.ts: `export function metricStatus(kind, metrics, device)`.
+
+  Offline-15min: `deriveStatus === 'offline' && now - latest.timestamp > 15*60e3`.
+
+  types.ts also: Site. Maybe `MetricName`? Skip.
+
+  Copy for labels (technician side, sentence case):
+  1. id 'offline-over-15m', label 'Silent over 15 minutes', description 'Devices that missed enough reports to count as offline more than 15 minutes ago.'
+  2. 'fridges-above-safe-temp', 'Fridges above safe temperature', 'Fridges whose last reported temperature is above 5 °C.'
+  3. 'critical-at-hq', 'Critical at Northgate Tower', 'Devices reporting critical at the head-office site right now.'
+  4. 'cameras-low-bitrate', 'Cameras with degraded bitrate', 'Cameras still reporting but streaming below 2 Mbps.'
+  5. 'recovered-last-hour', 'Recovered in the last hour', 'Devices that reported serious or critical in the last six hours and are back to good.'
+  6. 'intercoms-weak-signal', 'Intercoms with weak signal', 'Intercoms reporting signal below −75 dBm.'
+  7. 'switches-near-limit', 'Switches near their rated load', 'Switches drawing over 90% of their rated amps.'
+  8. 'thermostats-off-target', 'Thermostats off target', 'Thermostats more than 2.5 °C away from their setpoint.'
+
+  Now — does the UI (DashboardPage placeholder) build unchanged? Yes.
+
+  One concern: `noUnusedLocals` — careful.
+
+  Also should the hook expose `queries` running? No.
+
+  Write files now. Also a shared helper `fleetEnd`. Put in fleet.ts: `export function fleetEndTime(fleet: Device[]): number`.
+
+  stepMetrics needs prev metrics per kind — cast via kind narrowing: since Reading.metrics is DeviceMetrics union, use `as CameraMetrics` after checking kind. Fine.
+
+  Let me also double check offline devices in generateFleet: they stop at cutoffAt; but their history ends at cutoff ≤ end - 20min > interval → offline per derive. And their sim nextDueAt = Infinity.
+
+  Also degraded: history bad at end; latest reading recent; status critical/serious. Good.
+
+  Deterministic: generateFleet uses only rng + passed now. Date.now default — same seed different now → different timestamps but same values structure. Document.
+
+  Edge: `Math.max(...fleet.map(...))` with 240 entries fine.
+
+  intercom callsLastHour daily factor: `const hour = new Date(t).getHours()` — timezone-dependent → non-deterministic across machines? Given same t, getHours depends on TZ. Use getUTCHours for determinism. Good.
+
+  Now write the code.
+
+  status.ts:
+
+  ```ts
+  import type { Device, DeviceKind, DeviceMetrics, DeviceStatus, Reading, CameraMetrics, SwitchMetrics, FridgeMetrics, ThermostatMetrics, IntercomMetrics } from './types'
+
+  export function latestReading(device: Device): Reading | undefined {
+    return device.history[device.history.length - 1]
+  }
+
+  export function metricStatus(kind: DeviceKind, metrics: DeviceMetrics, device?: Device): DeviceStatus {
+    switch (kind) {
+      case 'camera': {
+        const m = metrics as CameraMetrics
+        if (m.uptimePct < 94 || m.bitrateMbps < 1) return 'critical'
+        if (m.uptimePct < 97 || m.bitrateMbps < 2) return 'serious'
+        if (m.uptimePct < 99 || m.bitrateMbps < 3) return 'warning'
+        return 'good'
+      }
+      case 'switch': {
+        const m = metrics as SwitchMetrics
+        const rated = device?.ratedAmps ?? 16
+        const ratio = m.loadAmps / rated
+        if (ratio > 0.98) return 'critical'
+        if (ratio > 0.9) return 'serious'
+        if (ratio > 0.8) return 'warning'
+        return 'good'
+      }
+      case 'fridge': {
+        const m = metrics as FridgeMetrics
+        if (m.temperatureC > 9) return 'critical'
+        if (m.temperatureC > 7) return 'serious'
+        if (m.temperatureC > 5) return 'warning'
+        return 'good'
+      }
+      case 'thermostat': {
+        const m = metrics as ThermostatMetrics
+        const dev = Math.abs(m.actualC - m.setpointC)
+        if (dev > 4) return 'critical'
+        if (dev > 2.5) return 'serious'
+        if (dev > 1) return 'warning'
+        return 'good'
+      }
+      case 'intercom': {
+        const m = metrics as IntercomMetrics
+        if (m.signalDbm < -85) return 'critical'
+        if (m.signalDbm < -75) return 'serious'
+        if (m.signalDbm < -65) return 'warning'
+        return 'good'
+      }
+    }
+  }
+
+  export function deriveStatus(device: Device, reading: Reading | undefined, now: number): DeviceStatus {
+    if (!reading) return 'offline'
+    const ageSec = (now - reading.timestamp) / 1000
+    if (ageSec > device.expectedIntervalSec) return 'offline'
+    return metricStatus(device.kind, reading.metrics, device)
+  }
+  ```
+
+  Wait — literal rule: healthy live devices have age < interval strictly, per earlier proof. But initial fleet: last history timestamp = end (for healthy), and deriveStatus with now = Date.now() which is ≥ end → age up to step (5min) > interval (30s) → everything offline until first live tick! Bad. Hmm.
+
+  History resolution 5min vs interval 30s conflict: the latest *message* should be recent for healthy devices. Fix: treat the last history point as the rollup, but the device's "last message" for healthy devices should be ≈ now. Options: set healthy devices' last history entry timestamp = end, and consumers call deriveStatus with now = lastUpdated (fleet end), not Date.now(). The hook exposes lastUpdated = sim clock. Then age = 0. Dashboard uses feed's lastUpdated as "now". That works — everything anchored to sim clock. And offline devices: cutoff at end - 20min..10h, so offline relative to sim now. 
+
+  But grace issue: interval 30s, sim advances 30s/tick; after tick, dues emitted at exact due ≤ simNow, age = simNow - latestDue < interval (proof). Between ticks, real time passes but now is frozen (lastUpdated) — fine since now only updates on ticks.
+
+  However literal rule: age > interval → offline. At age exactly... healthy age < interval always. OK.
+
+  But wait: last history entry timestamp = end where end = floor(now/step)*step, and fleetEnd = end. lastUpdated init = end. age 0. 
+
+  So fine. Document that consumers should use the feed's lastUpdated as "now".
+
+  Hmm, but one more: history step 5min means for a camera the "readings" in history are rollups; the *latest* entry is the latest message? Slight fiction — acceptable for mock.
+
+  Now fleet.ts full code:
+
+  ```ts
+  import { int, mulberry32, normal, pick, range, type Rng } from './prng'
+  import type { CameraMetrics, Device, DeviceKind, DeviceMetrics, FridgeMetrics, IntercomMetrics, Reading, Site, SwitchMetrics, ThermostatMetrics } from './types'
+
+  export const FLEET_SEED = 20260918
+  export const FLEET_SIZE = 240
+  export const HISTORY_HOURS = 24
+  export const HISTORY_STEP_SEC = 300
+  export const LIVE_STEP_SEC = 30
+
+  export const SITES: readonly Site[] = [...]
+
+  const SITE_SHORT: Record<string, string> = { 'northgate-tower': 'NT', ... }
+
+  const KIND_PLAN ...
+  const BASE_INTERVAL_SEC ...
+  const KIND_PREFIX: Record<DeviceKind, string> = { camera: 'CAM', switch: 'SWT', fridge: 'FRG', thermostat: 'THM', intercom: 'INT' }
+  ```
+
+  Profile & baselines as above. Write stepMetrics:
+
+  ```ts
+  function walk(prev: number, target: number, sd: number, rng: Rng): number {
+    return prev + (target - prev) * 0.08 + normal(rng, 0, sd)
+  }
+  function clamp(v: number, lo: number, hi: number): number {
+    return Math.min(hi, Math.max(lo, v))
+  }
+  function dayCycle(t: number, phase: number): number {
+    return Math.sin((t / 86_400_000) * Math.PI * 2 + phase)
+  }
+  ```
+
+  stepMetrics per kind:
+
+  ```ts
+  function stepMetrics(kind: DeviceKind, prev: DeviceMetrics, target: MetricTarget, rng: Rng, t: number): DeviceMetrics {
+    switch (kind) {
+      case 'camera': {
+        const p = prev as CameraMetrics
+        return {
+          uptimePct: clamp(walk(p.uptimePct, target.uptimePct, 0.15, rng), 0, 100),
+          bitrateMbps: clamp(walk(p.bitrateMbps, target.bitrateMbps, 0.3, rng), 0.1, 12),
+        }
+      }
+      case 'switch': {
+        const p = prev as SwitchMetrics
+        return { loadAmps: clamp(walk(p.loadAmps, target.loadAmps, 0.4, rng), 0, target.ratedAmps * 1.2) }
+      }
+      case 'fridge': {
+        const p = prev as FridgeMetrics
+        const cycled = target.temperatureC + 0.4 * dayCycle(t, target.phase)
+        return { temperatureC: clamp(walk(p.temperatureC, cycled, 0.15, rng), -10, 20) }
+      }
+      case 'thermostat': {
+        const p = prev as ThermostatMetrics
+        return {
+          setpointC: target.setpointC,
+          actualC: clamp(walk(p.actualC, target.actualC, 0.2, rng), 5, 35),
+        }
+      }
+      case 'intercom': {
+        const p = prev as IntercomMetrics
+        const hour = new Date(t).getUTCHours()
+        const business = hour >= 8 && hour <= 18 ? 1 : 0.15
+        const calls = Math.max(0, Math.round(normal(rng, target.callsBase * business, 1)))
+        return {
+          callsLastHour: calls,
+          signalDbm: clamp(walk(p.signalDbm, target.signalDbm, 1.5, rng), -100, -30),
+        }
+      }
+    }
+  }
+  ```
+
+  MetricTarget: `interface MetricTarget { [key: string]: number }` — includes phase, ratedAmps, setpointC etc. Fine.
+
+  baselines:
+
+  ```ts
+  interface Baselines { healthy: MetricTarget; degraded: MetricTarget }
+
+  function baselinesFor(kind: DeviceKind, rng: Rng): Baselines {
+    switch (kind) {
+      case 'camera':
+        return {
+          healthy: { uptimePct: range(rng, 99.2, 99.9), bitrateMbps: range(rng, 4, 8) },
+          degraded: { uptimePct: range(rng, 91, 96), bitrateMbps: range(rng, 0.5, 1.8) },
+        }
+      case 'switch': {
+        const rated = pick(rng, [16, 16, 32])
+        return {
+          healthy: { loadAmps: rated * range(rng, 0.2, 0.65), ratedAmps: rated },
+          degraded: { loadAmps: rated * range(rng, 0.92, 1.05), ratedAmps: rated },
+        }
+      }
+      case 'fridge':
+        return {
+          healthy: { temperatureC: range(rng, 2.5, 4.5), phase: range(rng, 0, Math.PI * 2) },
+          degraded: { temperatureC: range(rng, 8, 12), phase: range(rng, 0, Math.PI * 2) },
+        }
+      case 'thermostat': {
+        const setpoint = int(rng, 19, 23)
+        const direction = pick(rng, [-1, 1])
+        return {
+          healthy: { setpointC: setpoint, actualC: setpoint + range(rng, -0.5, 0.5) },
+          degraded: { setpointC: setpoint, actualC: setpoint + direction * range(rng, 4.5, 7) },
+        }
+      }
+      case 'intercom':
+        return {
+          healthy: { callsBase: range(rng, 2, 8), signalDbm: range(rng, -68, -55) },
+          degraded: { callsBase: range(rng, 2, 8), signalDbm: range(rng, -92, -78) },
+        }
+    }
+  }
+  ```
+
+  Note: rng call order deterministic — good.
+
+  Initial metrics from target (first reading = target + noise): stepMetrics needs a prev; seed prev by constructing from target: e.g. start with metricsAt(target) — build initial DeviceMetrics from target per kind:
+
+  ```ts
+  function initialMetrics(kind, target): DeviceMetrics {
+    switch (kind) {
+      case 'camera': return { uptimePct: target.uptimePct, bitrateMbps: target.bitrateMbps }
+      case 'switch': return { loadAmps: target.loadAmps }
+      case 'fridge': return { temperatureC: target.temperatureC }
+      case 'thermostat': return { setpointC: target.setpointC, actualC: target.actualC }
+      case 'intercom': return { callsLastHour: Math.round(target.callsBase), signalDbm: target.signalDbm }
+    }
+  }
+  ```
+
+  Device construction:
+
+  ```ts
+  export function generateFleet(seed: number = FLEET_SEED, now: number = Date.now()): Device[] {
+    const rng = mulberry32(seed)
+    const stepMs = HISTORY_STEP_SEC * 1000
+    const end = Math.floor(now / stepMs) * stepMs
+    const start = end - HISTORY_HOURS * 3_600_000
+
+    const sitePool: string[] = []
+    SITES.forEach((site, i) => {
+      for (let k = 0; k < SITE_COUNTS[i]; k += 1) sitePool.push(site.id)
+    })
+    shuffle(sitePool, rng)
+
+    const devices: Device[] = []
+    const sequences = new Map<string, number>()
+    let poolIndex = 0
+
+    for (const [kind, count] of KIND_PLAN) {
+      for (let n = 0; n < count; n += 1) {
+        const siteId = sitePool[poolIndex]
+        poolIndex += 1
+        const key = `${kind}@${siteId}`
+        const seq = (sequences.get(key) ?? 0) + 1
+        sequences.set(key, seq)
+        const code = `${KIND_PREFIX[kind]}-${SITE_SHORT[siteId]}-${String(seq).padStart(3, '0')}`
+        const interval = Math.round(BASE_INTERVAL_SEC[kind] * range(rng, 0.8, 1.2))
+        const baselines = baselinesFor(kind, rng)
+        const mode = rollMode(rng)
+        const device: Device = {
+          id: code.toLowerCase(),
+          name: `${KIND_NAMES[kind]} ${SITE_SHORT[siteId]}-${String(seq).padStart(3, '0')}`,
+          kind,
+          siteId,
+          expectedIntervalSec: interval,
+          ...(kind === 'switch' ? { ratedAmps: baselines.healthy.ratedAmps } : {}),
+          history: [],
+        }
+        const state: SimState = {
+          mode,
+          baselines,
+          missRate: mode === 'flaky' ? 0.08 : 0,
+          nextDueAt: mode === 'offline' ? Number.POSITIVE_INFINITY : end + interval * 1000,
+          patchStart: end - range(rng, 4, 9) * 3_600_000,
+          patchEnd: end - range(rng, 10, 55) * 60_000,
+          cutoffAt: mode === 'offline' ? end - range(rng, 20 / 60, 10) ... 
+        }
+  ```
+
+  cutoff: `end - range(rng, 20, 600) * 60_000` (20min to 10h).
+
+  History fill:
+
+  ```ts
+  const history: Reading[] = []
+  const liveTarget = mode === 'degraded' ? baselines.degraded : baselines.healthy
+  let metrics = initialMetrics(kind, liveTarget)
+  const lastT = mode === 'offline' ? state.cutoffAt : end
+  for (let t = start; t <= lastT; t += stepMs) {
+    const inPatch = mode === 'recovered' && t >= state.patchStart && t <= state.patchEnd
+    const target = inPatch || mode === 'degraded' ? baselines.degraded : baselines.healthy
+    metrics = stepMetrics(kind, metrics, target, rng, t)
+    history.push({ deviceId: device.id, timestamp: t, metrics })
+  }
+  device.history = history
+  simStates.set(device, state)
+  devices.push(device)
+  ```
+
+  Round metrics to sensible precision to keep data tidy: round(x, 2). Add rounding in stepMetrics outputs: e.g. `round2`. callsLastHour integer already. uptimePct round2 fine.
+
+  recovered patchEnd within last 55min guarantees "recovered in last hour"... but recovery means latest status good: after patchEnd, history has ~few points at healthy target — but mean reversion from degraded values: walk pulls 8%/step; temp from 10 → healthy 4 takes ~30 steps (2.5h) to converge! Bad: after patch, values still elevated for a while → still warning/serious at end. Fix: at patchEnd, snap metrics back: on first step after patch, reset metrics = initialMetrics(kind, baselines.healthy) then walk. I'll handle: `if (mode === 'recovered' && t === first step after patchEnd) metrics = initialMetrics(...)`. Implement via tracking inPatchPrev.
+
+  For degraded device count to be "genuinely bad": degraded target temp 8-12 → critical (>9) or serious (7-9). ok.
+
+  rollMode:
+
+  ```ts
+  function rollMode(rng: Rng): ProfileMode {
+    const roll = rng()
+    if (roll < 0.78) return 'healthy'
+    if (roll < 0.86) return 'flaky'
+    if (roll < 0.94) return 'degraded'
+    if (roll < 0.97) return 'recovered'
+    return 'offline'
+  }
+  ```
+
+  ~19 flaky, 19 degraded, 7 recovered, 7 offline. 
+
+  advanceFleet as sketched; also for flaky, missed reports create offline flickers.
+
+  fleetEndTime:
+
+  ```ts
+  export function fleetEndTime(fleet: Device[]): number {
+    let end = 0
+    for (const d of fleet) {
+      const last = d.history[d.history.length - 1]
+      if (last && last.timestamp > end) end = last.timestamp
+    }
+    return end
+  }
+  ```
+
+  advanceFleet history trimming: cutoff = toTime - 24h.
+
+  Note: offline devices never advance (nextDueAt Infinity) — return d unchanged.
+
+  types.ts:
+
+  ```ts
+  export type DeviceStatus = 'good' | 'warning' | 'serious' | 'critical' | 'offline'
+  export type DeviceKind = 'camera' | 'switch' | 'fridge' | 'thermostat' | 'intercom'
+
+  export interface Site { id: string; name: string }
+  ...metrics...
+  export interface Reading { deviceId: string; timestamp: number; metrics: DeviceMetrics }
+  export interface Device { id; name; kind; siteId; expectedIntervalSec; ratedAmps?: number; history: Reading[] }
+  ```
+
+  queries.ts:
+
+  ```ts
+  import { SITES } from './fleet'
+  import { deriveStatus, latestReading, metricStatus } from './status'
+  import type { Device, ... } from './types'
+
+  export interface FleetQuery {
+    id: string
+    label: string
+    description: string
+    predicate: (device: Device, now: number) => boolean
+  }
+
+  const HQ_SITE_ID = SITES[0].id
+  ```
+
+  SITES[0] — SITES is readonly Site[]; indexing fine.
+
+  Check 'critical at this site': `d.siteId === HQ_SITE_ID && status === 'critical'`.
+
+  Predicate helper: `const status = (d, now) => deriveStatus(d, latestReading(d), now)`.
+
+  Fridge temp access: `(latest.metrics as FridgeMetrics).temperatureC`.
+
+  index.ts barrel:
+
+  ```ts
+  export * from './types'
+  export * from './fleet'
+  export * from './status'
+  export * from './queries'
+  export { useLiveFeed } from './useLiveFeed'
+  export type { LiveFeedState } from './useLiveFeed'
+  ```
+
+  Careful with name clashes: none obvious. prng export too? Maybe not needed; export anyway? Keep prng internal but export mulberry32? queries/status don't need. Skip prng from barrel (or include for tests). I'll include `export * from './prng'` — harmless. Actually `type Rng` used in hook signature? No. Fine either way — include.
+
+  useLiveFeed.ts full:
+
+  ```ts
+  import { useEffect, useRef, useState } from 'react'
+  import { advanceFleet, FLEET_SEED, fleetEndTime, generateFleet, LIVE_STEP_SEC } from './fleet'
+  import { mulberry32, type Rng } from './prng'
+  import type { Device } from './types'
+
+  export interface LiveFeedState {
+    fleet: Device[]
+    lastUpdated: number
+    paused: boolean
+    setPaused: (paused: boolean) => void
+  }
+
+  interface SimClock { now: number; rng: Rng }
+
+  export function useLiveFeed(tickMs: number = 2000, seed: number = FLEET_SEED): LiveFeedState {
+    const [fleet, setFleet] = useState<Device[]>(() => generateFleet(seed))
+    const [lastUpdated, setLastUpdated] = useState<number>(() => fleetEndTime(fleet))
+    const [paused, setPaused] = useState(false)
+    const clockRef = useRef<SimClock | null>(null)
+
+    useEffect(() => {
+      if (paused) return
+      if (clockRef.current === null) {
+        clockRef.current = { now: fleetEndTime(fleet), rng: mulberry32(seed ^ 0x9e3779b9) }
+      }
+      const clock = clockRef.current
+      const id = window.setInterval(() => {
+        clock.now += LIVE_STEP_SEC * 1000
+        setFleet((prev) => advanceFleet(prev, clock.rng, clock.now))
+        setLastUpdated(clock.now)
+      }, tickMs)
+      return () => window.clearInterval(id)
+    }, [paused, tickMs, seed])  // fleet intentionally not a dep: clock starts from the initial fleet
+
+    return { fleet, lastUpdated, paused, setPaused }
+  }
+  ```
+
+  Wait: `useState(() => fleetEndTime(fleet))` — `fleet` from previous useState is available. Yes.
+
+  Now write all files. Also rounding: add `round2` in fleet.ts.
+
+  One more check: Device interface with `ratedAmps?: number` — exactOptionalPropertyTypes not enabled, fine.
+
+  Also should I worry that history of offline devices ends at cutoff which may be before start? cutoff = end - (20..600 min) ≥ end-10h > start (24h back). Fine.
+
+  Recovered devices: patchStart = end - 4..9h, patchEnd = end - 10..55min. patchStart could be > patchEnd? end-4h vs patchEnd end-0.2h — patchStart < patchEnd always since 4h > 55min. Good.
+
+  For recovered query, metricStatus on history readings: needs device for switch rated; pass device.
+
+  Write files now.
+
+• T1 scaffold is in place. Now I'll build the T2 data layer under `frontend/src/data/` — types, PRNG, fleet generator, status derivation, live-feed hook, and the 8 queries.
+
+• Now the live-feed hook, queries, and barrel export.
+
+• Now build and check for TypeScript errors.
+> is3-dashboard@0.1.0 build
+> tsc -b && vite build
+
+vite v5.4.21 building for production...
+transforming...
+✓ 37 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                                                        0.43 kB │ gzip:  0.29 kB
+dist/assets/ibm-plex-mono-latin-400-normal-CvHOgSBP.woff              13.14 kB
+dist/assets/ibm-plex-mono-latin-500-normal-CB9ihrfo.woff              13.16 kB
+dist/assets/ibm-plex-mono-latin-400-normal-DMJ8VG8y.woff2             14.71 kB
+dist/assets/ibm-plex-mono-latin-500-normal-DSY6xOcd.woff2             14.89 kB
+dist/assets/ibm-plex-sans-condensed-latin-600-normal-6XnkKYvF.woff    18.76 kB
+dist/assets/ibm-plex-sans-condensed-latin-600-normal-CRd5VyFf.woff2   19.82 kB
+dist/assets/ibm-plex-sans-latin-400-normal-CYLoc0-x.woff              22.10 kB
+dist/assets/ibm-plex-sans-latin-400-normal-CDDApCn2.woff2             22.59 kB
+dist/assets/ibm-plex-sans-latin-500-normal-BgVn5rGT.woff              23.92 kB
+dist/assets/ibm-plex-sans-latin-500-normal-6ng42L7E.woff2             24.18 kB
+dist/assets/index-TtkWswnd.css                                         8.38 kB │ gzip:  2.58 kB
+dist/assets/index-BHUAXfQr.js                                        168.07 kB │ gzip: 54.73 kB
+✓ built in 865ms
+
+
+• Build clean. Now sanity-check the data layer with a quick script: determinism, counts, statuses, queries, offline rule. Run a quick node script using tsx? No tsx installed. I can compile quickly with esbuild? vite is available. Easiest: write a small test script and run with `npx tsx`? That would install tsx. Alternatively use vite-node? Not installed. Use esbuild from node_modules (vite dep includes esbuild binary). Let me try `npx esbuild --bundle` to a temp file then run node.
+
+• Build is clean. Let me verify the data layer behaves correctly (determinism, counts, statuses, queries) with a quick smoke test using the bundled esbuild.✘ [ERROR] Could not resolve "./src/data"
+
+    ../../../../../../../../../../tmp/t2-check.ts:1:127:
+      1 │ ... deriveStatus, latestReading, mulberry32, SITES } from './src/data'
+        ╵                                                           ~~~~~~~~~~~~
+
+
+
+deterministic: true
+fleet size: 240
+sites: 6 devices per site: 56,48,40,36,32,28
+per kind: camera:72 switch:60 fridge:36 thermostat:42 intercom:30
+status mix @fleet end: { good: 207, critical: 10, serious: 7, offline: 10, warning: 6 }
+history len sample: 289 span h: 24
+offline example age min: 435 interval s: 29
+query offline-over-15m: 10
+query fridges-above-safe-temp: 1
+query critical-at-hq: 3
+query cameras-degraded-bitrate: 7
+query recovered-last-hour: 0
+query intercoms-weak-signal: 4
+query switches-near-rated-load: 2
+query thermostats-off-target: 3
+advanced to +s: 298
+status mix after 10 ticks: { offline: 206, good: 33, critical: 1 }
+no Math.random in layer: true
+• Issues found:
+
+  1. `recovered-last-hour` returns 0. Why? The recovered devices: patch bad readings 4-9h ago... patchStart = end - 4..9h — but query window is last 6h; patchStart could be end-9h with patchEnd end-55min, bad readings exist in window if patch overlaps last 6h. patchStart end-9h → bad readings from end-9h to end-55min... wait patchEnd is end - 10..55 min, so bad readings run until recently — but query requires no bad reading in last hour. patchEnd = end-10min means bad readings up to 10min ago → fails. Hmm, the patchEnd within last hour conflicts with "no bad reading in last hour". Also recovery: after patch ends, values snap to healthy. But a bad reading at patchEnd (end-10min) is within the last hour → returns false.
+
+  Fix: patchEnd should be end - range(65, 120) min? But then "recovered in the last hour" — recovery happened... The query defines: bad in last 6h, good now, nothing bad in last hour. So patchEnd ∈ [end-6h+ε ... end-1h-ε]. To have recovered devices match, set patchEnd = end - range(65, 180) min (1-3h ago). The query name "recovered in the last hour" is a bit off then, but the query definition governs. Alternatively adjust query: bad readings between 6h ago and now, latest good, and last bad > 30 min ago? Better to keep query semantics clean and adjust generator: patchEnd = end - range(70, 300) min. Then recovered devices: bad until 1-5h ago, good since → matches "bad in last 6h, nothing bad in last hour, good now".
+
+  But wait — after patchEnd, history steps at 5min with snap to healthy at first step after patch — the snap happens at first t > patchEnd. Values snap exactly to healthy initial (no noise until walk) — then walk adds noise. Good.
+
+  However there's a subtlety: recovered status at end must be 'good' via metricStatus — healthy baseline, yes.
+
+  Also thermostat recovered: patch has actualC off by 4.5-7 → metricStatus serious/critical. Camera degraded: serious/critical thresholds? degraded uptime 91-96/bitrate 0.5-1.8 → mostly critical/serious. Fridge 8-12 → serious/critical. Intercom -78..-92 → serious/critical. Switch 0.92-1.05 rated → serious/critical. Good.
+
+  2. After 10 ticks (300 sim-seconds): 206 offline! Massive bug. Why? advanceFleet emits due readings while nextDueAt <= toTime. Initial nextDueAt = end + interval. After 10 ticks toTime = end + 300s. Camera interval ~24-36s → should emit ~10 readings. But status offline means age > interval... 
+
+  Ah — the bug: `advanceFleet` maps over devices but `simStates` WeakMap keyed by device object; after first advance, new device objects `{...device, history}` are created — simStates.get(newDevice) fails! So only the first advanceFleet call works for changed devices; subsequent ticks lose sim state and never report again → everything goes stale → offline.
+
+  Fix: key sim state by device.id in a Map instead of WeakMap keyed by object. SimState map: `const simStates = new Map<string, SimState>()`. Module-level map persists across generateFleet calls (ids identical for same seed — re-generation overwrites; fine).
+
+  Also note in my smoke test I called advanceFleet repeatedly with the same fleet — with id-keyed map it works.
+
+  3. `fridges-above-safe-temp: 1` — low but non-zero; degraded fridges temp 8-12, warning band 5-7 from walk noise... only 1 fridge >5? Degraded count 8% of 36 ≈ 3 fridges; maybe only 1 fridge degraded by seed. Acceptable but let me check after fixes.
+
+  Also recovered patchEnd change: update comment.
+
+  Also check: after fixing sim map, verify status mix after ticks stays sane.
+
+  Another check — offline devices: 10 at fleet end. Good (>15min silent: cutoff 20-600min).
+
+  Let me fix fleet.ts.Also update the recovered query description in queries.ts? Query says "Recovered in the last hour" — with patchEnd 70-180min ago, the recovery happened 1-3h ago, not within last hour. Mismatch between label and data. Options: change generator so bad patch ends within the last hour but the *status* recovered earlier... The query semantics: bad in last 6h, no bad in last hour, good now. A device whose patch ended 65min ago recovered "about an hour ago". Hmm, label "Recovered in the last hour" with predicate "no bad in last hour" is inherently contradictory for strict reading. Alternative: keep generator patchEnd at 65-120 min, and adjust query to "bad within last 3 hours, good for the last hour"? Or rename query label to "Back to good" / "Recently recovered"?
+
+  Better: redefine query semantics: device currently good, and there was a serious/critical reading within the last hour, but latest readings (say last 15 min) are good. Then generator patchEnd = end - range(10, 55)min works: bad readings until ~10-55min ago, then snap to healthy. But readings are 5-min resolution; after patchEnd, next reading snaps healthy. If patchEnd = end-10min, bad reading at end-10min, healthy readings at end-5min, end. Query: bad in last hour AND good now AND last bad reading ≥ some minutes ago? "Recovered" = was bad recently, now good. Predicate: latest good, exists bad reading in last hour, and no bad readings in last 10 min (i.e., it actually recovered, not flapping)?
+
+  With 5-min history, device bad at end-10min, good at end-5min & end → bad within last hour, good for last ~10min. Let me implement: sawBad in last hour, and all readings in last 10 minutes are good... eh, adds magic constant. Simpler: good now AND bad reading within last hour AND latest bad reading older than latest good reading (trivially true if latest is good... no, history interleaves chronologically; latest good means the newest reading is good — flapping possible but snap ensures monotonic recovery for our profiles).
+
+  Cleanest: predicate = status now is good AND (some serious/critical reading within last hour). Generator: patchEnd = end - range(10, 55)min (original), snap back after. That matches label "Recovered in the last hour". Revert my patchEnd change to original values but keep patchStart 4-6h? patchStart irrelevant then; keep range(4,9)h. Wait — but original run gave 0 matches. Why? Original patchEnd = end - 10..55min. Query required no bad readings within the last hour — bad readings up to patchEnd (within last hour) → failed. With new predicate (bad within last hour, good now), recovered devices match: bad reading at ≤55min ago, good at end. 
+
+  But flapping: history after patchEnd snap — the first post-patch reading snaps to initialMetrics (no noise), subsequent walk steps add small noise — stays good. Good.
+
+  Edge: could a healthy device accidentally match? Needs serious/critical reading in last hour — healthy baselines keep metrics in good band; walk noise is small. Fridge healthy 2.5-4.5 + noise sd 0.15 — won't exceed 7. Fine.
+
+  Update query predicate:
+
+  ```ts
+  predicate: (device, now) => {
+    if (statusOf(device, now) !== 'good') return false
+    const hourAgo = now - HOUR
+    for (const reading of device.history) {
+      if (reading.timestamp < hourAgo) continue
+      const s = metricStatus(device.kind, reading.metrics, device)
+      if (s === 'serious' || s === 'critical') return true
+    }
+    return false
+  }
+  ```
+
+  Hmm — but should also ensure it *recovered* rather than is mid-bad-patch-and-lucky-good? If currently good and was bad within the hour, that's recovered enough for a mock. Also sixHoursAgo unused now — remove HOUR*6.
+
+  Revert generator patchEnd to `end - range(rng, 10, 55) * 60_000` and patchStart to `end - range(rng, 2, 5) * 3_600_000` (patch within last few hours, overlapping last hour). Actually patch just needs to cover some time ending 10-55min ago. patchStart = end - range(2,5)h fine.deterministic: true
+fleet size: 240
+sites: 6 devices per site: 56,48,40,36,32,28
+per kind: camera:72 switch:60 fridge:36 thermostat:42 intercom:30
+status mix @fleet end: { good: 207, critical: 10, serious: 7, offline: 10, warning: 6 }
+history len sample: 289 span h: 24
+offline example age min: 435 interval s: 29
+query offline-over-15m: 10
+query fridges-above-safe-temp: 1
+query critical-at-hq: 3
+query cameras-degraded-bitrate: 7
+query recovered-last-hour: 5
+query intercoms-weak-signal: 4
+query switches-near-rated-load: 2
+query thermostats-off-target: 3
+advanced to +s: 300
+status mix after 10 ticks: { good: 205, critical: 10, serious: 7, offline: 10, warning: 8 }
+no Math.random in layer: true
+dist/assets/ibm-plex-sans-latin-500-normal-BgVn5rGT.woff              23.92 kB
+dist/assets/ibm-plex-sans-latin-500-normal-6ng42L7E.woff2             24.18 kB
+dist/assets/index-TtkWswnd.css                                         8.38 kB │ gzip:  2.58 kB
+dist/assets/index-BHUAXfQr.js                                        168.07 kB │ gzip: 54.73 kB
+✓ built in 916ms
+All green now:
+  - deterministic ✓
+  - 240 devices, 6 sites, 5 kinds ✓
+  - 24h history at 5-min resolution (289 points) ✓
+  - offline rule works ✓
+  - live feed advances without mass-offline ✓ (status mix stable after 10 ticks; flaky misses shifted warning 6→8, plausible)
+  - all 8 queries match non-zero ✓
+  - build clean ✓
+
+  Also verify no Math.random in src/data and confirm strict mode build. Build passed with tsc -b (strict). Check Math.random grep quickly, then write T2-SUMMARY.md.
+
+• All checks pass now. Quick final sweep for `Math.random` in the layer, then the summary log.
+
+• Only doc comments. Write the summary log.
+
+• Only doc comments — no actual `Math.random` usage. Writing the summary.
+
+• Done. Final build was run after the last edits (the combined command included npm run build and it succeeded). Summarize for user.
+
+• T2 is complete and verified. What was built, all inside `frontend/src/data/`:
+
+  - **`types.ts`** — `Device`, `Reading`, `Site`, `DeviceStatus`, `DeviceKind`, and per-kind metric shapes (camera: uptime/bitrate; switch: load amps; fridge: temperature; thermostat: setpoint vs actual; intercom: calls/signal).
+  - **`prng.ts`** — seeded `mulberry32` plus sampling helpers; no `Math.random` anywhere (grep-verified).
+  - **`fleet.ts`** — `generateFleet()`: 240 devices across 6 named sites and 5 kinds, realistic per-kind reporting intervals, 24h of history at 5-minute resolution with mean-reverting drift and daily cycles. Health mix leaves ~10 critical, ~7 serious, ~10 offline, plus flaky and "recovered" devices so the dashboard has something to show. Same seed ⇒ byte-identical fleet.
+  - **`status.ts`** — pure `deriveStatus(device, reading, now)`: stale past the expected interval ⇒ `offline`, otherwise kind-specific thresholds. Status is never stored or assigned.
+  - **`useLiveFeed.ts`** — advances the simulation every 2s (30 sim-seconds), exposes `{ fleet, lastUpdated, paused, setPaused }`, clears its interval on unmount.
+  - **`queries.ts`** — exactly 8 pre-defined queries as pure `{ id, label, description, predicate }` objects.
+  - **`index.ts`** — barrel export.
+
+  Two bugs were caught by a behavioural smoke test (not just the build): sim state was keyed by device object identity, so everything silently went offline after the first live tick — re-keyed by device id; and the "recovered in the last hour" query's semantics didn't match the generator's recovery window — aligned them.
+
+  `npm run build` exits 0 with zero TypeScript errors under strict mode and zero warnings (tsc -b && vite build, 37 modules, built in ~0.9s). The smoke test confirmed determinism, fleet/site/kind counts, the offline rule, stable status mix across live ticks, and non-zero matches for all 8 queries. Full details and exact build output are in `orchestration/logs/T2-SUMMARY.md`.
+
+  T3/T4/T5 (dashboard UI, charts, architecture page) were not touched.
+
+To resume this session: kimi -r session_16cf9878-b4b3-45ba-9268-822020829984

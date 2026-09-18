@@ -1,0 +1,179 @@
+kimi version 0.39.1
+• Let me read the brief and tasks files first.
+
+• I'll start by reading the orchestration files.
+
+• Now scaffold. Check node/npm availability and frontend dir contents.
+
+• BRIEF and TASKS read. Now scaffolding the frontend.v20.19.6
+10.8.2
+total 8
+drwxrwxr-x 2 marketer7 marketer7 4096 Sep 18 04:08 .
+drwxrwxr-x 5 marketer7 marketer7 4096 Sep 18 04:08 ..
+
+
+• Empty frontend dir. Scaffold manually (faster and more controlled than create-vite, but npm create vite is fine too). I'll write files directly — that gives strict TS config control. Then npm install.
+
+  Dependencies:
+  - react, react-dom, react-router-dom
+  - @fontsource/ibm-plex-sans, @fontsource/ibm-plex-sans-condensed, @fontsource/ibm-plex-mono
+  - dev: vite@^5, @vitejs/plugin-react, typescript, @types/react, @types/react-dom, tailwindcss@^3, postcss, autoprefixer
+
+  Note Tailwind 4 exists but the task says tailwind.config.js theme.extend — use Tailwind 3.
+
+  Files:
+  - package.json
+  - vite.config.ts (base './')
+  - tsconfig.json + tsconfig.node.json (strict)
+  - index.html (lang="en", tabular-nums will be in CSS)
+  - tailwind.config.js, postcss.config.js
+  - src/main.tsx, src/App.tsx, src/index.css
+  - src/components/AppShell.tsx
+  - src/pages/DashboardPage.tsx, ArchitecturePage.tsx
+
+  Tokens: map all into tailwind theme.extend colors with CSS var references. Use rgb with alpha? Some are rgba (border). Simplest: define colors referencing var() directly:
+
+  colors: {
+    'page-plane': 'var(--page-plane)',
+    ...
+  }
+  That works with Tailwind as long as no opacity modifiers are needed. Fine.
+
+  Font families: display: IBM Plex Sans Condensed; sans/body: IBM Plex Sans; mono/data: IBM Plex Mono.
+
+  Fonts: import specific weights in main.tsx or index.css:
+  - @fontsource/ibm-plex-sans/400.css, 500.css
+  - @fontsource/ibm-plex-sans-condensed/600.css
+  - @fontsource/ibm-plex-mono/400.css, 500.css
+
+  Live-feed indicator dot: a pulsing dot with status-good color, respecting prefers-reduced-motion.
+
+  Customer name: pick a plausible one, e.g. "Northgate Facilities". Brief doesn't specify. Keep it simple.
+
+  Write package.json with pinned-ish versions, then npm install.
+
+• Empty dir, Node 20. I'll write the scaffold files directly, then install and build.
+
+• tsconfig.json with `"include": ["src"]` won't include vite.config.ts — need a solution-style root tsconfig with references. Standard Vite template: tsconfig.json has references to tsconfig.app.json and tsconfig.node.json. My current tsconfig.json is the app config. `tsc -b` on tsconfig.json without references won't check vite.config.ts, but that's fine — actually the standard template does:
+
+  tsconfig.json: { "files": [], "references": [{"path":"./tsconfig.app.json"},{"path":"./tsconfig.node.json"}] }
+
+  Let me restructure: tsconfig.app.json for src, tsconfig.node.json for vite.config.ts, tsconfig.json as solution file. But I already wrote tsconfig.json as app config. Simpler: keep tsconfig.json as app config including only src, and vite.config.ts excluded from type-check — `tsc -b` will just build src. That works and builds clean. But vite.config.ts wouldn't be type checked. Acceptable, but the standard approach is better. Actually with "tsc -b" and tsconfig.json containing "include":["src"], vite.config.ts just isn't compiled — no error. It's fine, keep it simple. Actually I wrote tsconfig.node.json which would be unused then. To keep clean, make tsconfig.json a solution file with references. Let me do that properly.
+
+• Let me restructure the tsconfig as a proper solution file with references.
+
+• Now the source files: global stylesheet with tokens, shell, pages, router.
+
+
+To address all issues (including breaking changes), run:
+  npm audit fix --force
+
+Run `npm audit` for details.
+
+> is3-dashboard@0.1.0 build
+> tsc -b && vite build
+
+vite v5.4.21 building for production...
+transforming...
+✓ 37 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                                                             0.43 kB │ gzip:  0.29 kB
+dist/assets/ibm-plex-mono-vietnamese-500-normal-C8zxqsMH.woff               5.62 kB
+dist/assets/ibm-plex-mono-vietnamese-400-normal-DDuiU_S-.woff               5.62 kB
+dist/assets/ibm-plex-mono-cyrillic-ext-500-normal-BIfNGwUT.woff             5.77 kB
+dist/assets/ibm-plex-mono-cyrillic-ext-400-normal-DMdlQ8Kv.woff             5.82 kB
+dist/assets/ibm-plex-mono-vietnamese-400-normal-BulugwFq.woff2              5.87 kB
+dist/assets/ibm-plex-mono-vietnamese-500-normal-DZ4AoWbu.woff2              6.04 kB
+dist/assets/ibm-plex-sans-condensed-vietnamese-600-normal--5ui7us-.woff     6.14 kB
+dist/assets/ibm-plex-sans-vietnamese-400-normal-fK1oJ5dG.woff               6.39 kB
+dist/assets/ibm-plex-sans-vietnamese-500-normal-BEb3_waV.woff               6.59 kB
+dist/assets/ibm-plex-sans-condensed-vietnamese-600-normal-CdKbmnAp.woff2    6.81 kB
+dist/assets/ibm-plex-mono-cyrillic-ext-400-normal-xuaO2J-f.woff2            6.91 kB
+dist/assets/ibm-plex-mono-cyrillic-ext-500-normal-BqneJy0T.woff2            6.97 kB
+dist/assets/ibm-plex-mono-cyrillic-400-normal-CEL4l2ZJ.woff                 7.20 kB
+dist/assets/ibm-plex-mono-cyrillic-500-normal-Ael50iVv.woff                 7.21 kB
+dist/assets/ibm-plex-sans-vietnamese-400-normal-DG4YqDda.woff2              8.20 kB
+dist/assets/ibm-plex-mono-cyrillic-400-normal-BSMlKf0J.woff2                8.36 kB
+dist/assets/ibm-plex-sans-vietnamese-500-normal-e4dixQRQ.woff2              8.42 kB
+dist/assets/ibm-plex-mono-cyrillic-500-normal-Bq9vWWag.woff2                8.46 kB
+dist/assets/ibm-plex-sans-greek-400-normal-D9ESIMu3.woff                    8.76 kB
+dist/assets/ibm-plex-sans-greek-500-normal-CuWXN6rf.woff                    9.15 kB
+dist/assets/ibm-plex-sans-greek-400-normal-_efipK4i.woff2                   9.94 kB
+dist/assets/ibm-plex-sans-cyrillic-ext-400-normal-Dsrv2Tcn.woff            10.29 kB
+dist/assets/ibm-plex-sans-greek-500-normal-JMMifIXV.woff2                  10.38 kB
+dist/assets/ibm-plex-sans-cyrillic-ext-500-normal-DB5PtV2g.woff            10.59 kB
+dist/assets/ibm-plex-mono-latin-ext-400-normal-D3D2R8hC.woff               11.77 kB
+dist/assets/ibm-plex-mono-latin-ext-500-normal-CZ70TYgx.woff               11.77 kB
+dist/assets/ibm-plex-sans-cyrillic-ext-400-normal-g30qAdWV.woff2           12.15 kB
+dist/assets/ibm-plex-sans-cyrillic-ext-500-normal-Cs5J6C77.woff2           12.31 kB
+dist/assets/ibm-plex-mono-latin-400-normal-CvHOgSBP.woff                   13.14 kB
+dist/assets/ibm-plex-mono-latin-500-normal-CB9ihrfo.woff                   13.16 kB
+dist/assets/ibm-plex-mono-latin-ext-400-normal-BmRBH3aV.woff2              13.35 kB
+dist/assets/ibm-plex-mono-latin-ext-500-normal-CAhNIIs5.woff2              13.43 kB
+dist/assets/ibm-plex-sans-cyrillic-400-normal-BTotfTJu.woff                13.51 kB
+dist/assets/ibm-plex-sans-cyrillic-500-normal-ByOcLdNv.woff                13.86 kB
+dist/assets/ibm-plex-sans-condensed-latin-ext-600-normal-DvCwRnqE.woff     13.99 kB
+dist/assets/ibm-plex-sans-latin-ext-400-normal-RBey6euL.woff               14.36 kB
+dist/assets/ibm-plex-mono-latin-400-normal-DMJ8VG8y.woff2                  14.71 kB
+dist/assets/ibm-plex-sans-latin-ext-500-normal-D0aIdm-b.woff               14.74 kB
+dist/assets/ibm-plex-sans-cyrillic-400-normal-DZqxrq2p.woff2               14.80 kB
+dist/assets/ibm-plex-mono-latin-500-normal-DSY6xOcd.woff2                  14.89 kB
+dist/assets/ibm-plex-sans-cyrillic-500-normal-CocWQlwt.woff2               15.00 kB
+dist/assets/ibm-plex-sans-latin-ext-400-normal-C5H60-Va.woff2              15.98 kB
+dist/assets/ibm-plex-sans-condensed-latin-ext-600-normal-CBdNZ9Ci.woff2    16.04 kB
+dist/assets/ibm-plex-sans-latin-ext-500-normal-DakdToA3.woff2              16.46 kB
+dist/assets/ibm-plex-sans-condensed-latin-600-normal-6XnkKYvF.woff         18.76 kB
+dist/assets/ibm-plex-sans-condensed-latin-600-normal-CRd5VyFf.woff2        19.82 kB
+dist/assets/ibm-plex-sans-latin-400-normal-CYLoc0-x.woff                   22.10 kB
+dist/assets/ibm-plex-sans-latin-400-normal-CDDApCn2.woff2                  22.59 kB
+dist/assets/ibm-plex-sans-latin-500-normal-BgVn5rGT.woff                   23.92 kB
+dist/assets/ibm-plex-sans-latin-500-normal-6ng42L7E.woff2                  24.18 kB
+dist/assets/index-CpLnOWOz.css                                             20.18 kB │ gzip:  6.23 kB
+dist/assets/index-CKa46_7J.js                                             168.07 kB │ gzip: 54.73 kB
+✓ built in 891ms
+• Build clean, exit 0, zero TS errors, zero warnings. The full fontsource import pulls all subsets — acceptable but heavy. Could import latin-only to slim, e.g. '@fontsource/ibm-plex-sans/latin-400.css'. That's a nice optimization and still self-hosted. Let me check if that path exists in fontsource v5 — yes, `@fontsource/ibm-plex-sans/latin-400.css` is valid in v5. That reduces asset count significantly. Worth doing? BRIEF doesn't require subsets. It's a small improvement; latin-only is appropriate for an English dashboard. I'll switch to latin subsets and rebuild.
+> is3-dashboard@0.1.0 build
+> tsc -b && vite build
+
+vite v5.4.21 building for production...
+transforming...
+✓ 37 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                                                        0.43 kB │ gzip:  0.29 kB
+dist/assets/ibm-plex-mono-latin-400-normal-CvHOgSBP.woff              13.14 kB
+dist/assets/ibm-plex-mono-latin-500-normal-CB9ihrfo.woff              13.16 kB
+dist/assets/ibm-plex-mono-latin-400-normal-DMJ8VG8y.woff2             14.71 kB
+dist/assets/ibm-plex-mono-latin-500-normal-DSY6xOcd.woff2             14.89 kB
+dist/assets/ibm-plex-sans-condensed-latin-600-normal-6XnkKYvF.woff    18.76 kB
+dist/assets/ibm-plex-sans-condensed-latin-600-normal-CRd5VyFf.woff2   19.82 kB
+dist/assets/ibm-plex-sans-latin-400-normal-CYLoc0-x.woff              22.10 kB
+dist/assets/ibm-plex-sans-latin-400-normal-CDDApCn2.woff2             22.59 kB
+dist/assets/ibm-plex-sans-latin-500-normal-BgVn5rGT.woff              23.92 kB
+dist/assets/ibm-plex-sans-latin-500-normal-6ng42L7E.woff2             24.18 kB
+dist/assets/index-TtkWswnd.css                                         8.38 kB │ gzip:  2.58 kB
+dist/assets/index-BHUAXfQr.js                                        168.07 kB │ gzip: 54.73 kB
+✓ built in 900ms
+Clean build, exit 0. Also quickly verify dev serves both routes? TASKS accept criteria mentions `npm run dev` serves both routes. Let me quickly check with a curl — HashRouter means both routes serve the same index.html; a quick dev server smoke test is cheap. Also verify base './' in output — index.html should reference ./assets. Check dist/index.html.
+
+• Clean build. Quick verification of `base: './'` in output and a dev-server smoke test for both routes.src="./assets/index-BHUAXfQr.js"
+href="./assets/index-TtkWswnd.css"
+
+
+<title>Is3 — device fleet status</title>
+<title>Is3 — device fleet status</title>
+• Dev server serves both (hash routing means same HTML for both — correct). Now write T1-SUMMARY.md with files added and exact build output.
+
+• T1 is complete and verified. Summary:
+
+  - **Scaffold**: Vite 5.4 + React 18 + TS strict + Tailwind 3 in `frontend/`, with a standard solution-style tsconfig (`tsc -b` checks both app and `vite.config.ts`).
+  - **Tokens**: all 18 BRIEF §3 colours live once as CSS custom properties in `src/index.css`; `tailwind.config.js` maps them into `theme.extend.colors` as `var(--…)` references — zero hex elsewhere.
+  - **Fonts**: self-hosted `@fontsource` IBM Plex Sans (400/500), Sans Condensed (600), Mono (400/500), latin subsets only, wired as `font-sans` / `font-display` / `font-data`.
+  - **Routing/shell**: `HashRouter` with `/` and `/architecture`, `AppShell` with slim top bar (Is3, nav, customer name, live-feed dot), content area, footer, dark-only.
+  - **Compliance details**: `base: './'` confirmed in the built HTML (`./assets/…`), `lang="en"`, `tabular-nums` utility, focus-visible ring, `prefers-reduced-motion` handling.
+  - **Verification**: `npm install` then `npm run build` — exit 0, 37 modules, no TS errors, no warnings. Dev server smoke-tested both routes. Full build output recorded in `orchestration/logs/T1-SUMMARY.md`.
+
+  One note: the customer name isn't specified in the BRIEF, so I used a placeholder (`Northgate Facilities`) — easy to change in `AppShell.tsx` when the real name is known. T2–T6 untouched, as instructed.
+
+To resume this session: kimi -r session_8ef17e2a-386d-4cb7-ba3c-6f6b8a028254

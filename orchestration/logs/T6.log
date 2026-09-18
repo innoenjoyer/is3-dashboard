@@ -1,0 +1,621 @@
+kimi version 0.39.1
+• Let me start by reading the brief and tasks files, and exploring the frontend structure.
+
+• I'll start by reading the orchestration docs and surveying the frontend structure.frontend:
+total 160
+drwxrwxr-x   5 marketer7 marketer7  4096 Sep 18 11:33 .
+drwxrwxr-x   5 marketer7 marketer7  4096 Sep 18 05:24 ..
+drwxrwxr-x   3 marketer7 marketer7  4096 Sep 18 11:33 dist
+-rw-rw-r--   1 marketer7 marketer7   327 Sep 18 04:32 index.html
+drwxrwxr-x 107 marketer7 marketer7  4096 Sep 18 04:37 node_modules
+-rw-rw-r--   1 marketer7 marketer7   716 Sep 18 04:31 package.json
+-rw-rw-r--   1 marketer7 marketer7 92867 Sep 18 04:35 package-lock.json
+-rw-rw-r--   1 marketer7 marketer7    80 Sep 18 04:32 postcss.config.js
+drwxrwxr-x   5 marketer7 marketer7  4096 Sep 18 04:54 src
+-rw-rw-r--   1 marketer7 marketer7  1340 Sep 18 04:32 tailwind.config.js
+-rw-rw-r--   1 marketer7 marketer7   511 Sep 18 04:32 tsconfig.app.json
+-rw-rw-r--   1 marketer7 marketer7  1408 Sep 18 11:33 tsconfig.app.tsbuildinfo
+-rw-rw-r--   1 marketer7 marketer7   119 Sep 18 04:32 tsconfig.json
+-rw-rw-r--   1 marketer7 marketer7   253 Sep 18 04:31 tsconfig.node.json
+-rw-rw-r--   1 marketer7 marketer7  8536 Sep 18 04:36 tsconfig.node.tsbuildinfo
+-rw-rw-r--   1 marketer7 marketer7   247 Sep 18 04:31 vite.config.ts
+
+frontend/src:
+total 32
+drwxrwxr-x 5 marketer7 marketer7 4096 Sep 18 04:54 .
+drwxrwxr-x 5 marketer7 marketer7 4096 Sep 18 11:33 ..
+-rw-rw-r-- 1 marketer7 marketer7  437 Sep 18 04:32 App.tsx
+drwxrwxr-x 4 marketer7 marketer7 4096 Sep 18 10:55 components
+drwxrwxr-x 2 marketer7 marketer7 4096 Sep 18 04:57 data
+-rw-rw-r-- 1 marketer7 marketer7 1852 Sep 18 04:36 index.css
+-rw-rw-r-- 1 marketer7 marketer7  315 Sep 18 04:32 main.tsx
+drwxrwxr-x 2 marketer7 marketer7 4096 Sep 18 04:33 pages
+---
+frontend/src/App.tsx
+frontend/src/index.css
+frontend/src/main.tsx
+
+frontend/src/components:
+AppShell.tsx
+arch
+charts
+DeviceCard.tsx
+DeviceDrawer.tsx
+DeviceGrid.tsx
+FilterBar.tsx
+FleetPulse.tsx
+format.ts
+icons.tsx
+KpiRow.tsx
+QueryPanel.tsx
+StatusBadge.tsx
+
+frontend/src/data:
+fleet.ts
+index.ts
+prng.ts
+queries.ts
+status.ts
+types.ts
+useLiveFeed.ts
+
+frontend/src/pages:
+ArchitecturePage.tsx
+DashboardPage.tsx
+
+
+• Let me look at the current index.html, vite.config.ts, index.css, AppShell, and key components to plan the a11y pass. This is a substantial multi-part task. Let me read key files first.
+
+• Now let me inspect the key files I'll be touching.
+
+• Now let me look at the components to assess a11y state: DeviceDrawer (focus trap), StatusBadge (colour alone), charts (table toggle), FleetPulse, pages for heading order. Given the size, I could delegate the audit to a subagent, but I need to make precise edits. Let me read the key components myself — there are ~20 files. I'll read the important ones.
+
+• Now let me read the main interactive components for the a11y audit.
+
+• The drawer already traps focus and restores focus. FleetPulse is keyboard-navigable. StatusBadge is icon+label+colour. Focus ring exists globally.
+
+  Remaining work:
+  - A: favicon (SVG) referenced from index.html — use `public/favicon.svg`.
+  - B: meta description, theme-color, OG tags, per-route title (react-helmet not available presumably; do a tiny useEffect-based DocumentTitle component or just set document.title in pages).
+  - C: skip-to-content link, heading order check, reduced-motion check (index.css already handles; verify the live pulse animate-ping is disabled — the global CSS sets animation-duration 0.01ms and iteration 1, which effectively stops it; but maybe explicitly hide. The brief says disable pulse and transitions; the CSS does). Chart table toggle focus rings — global :focus-visible covers buttons.
+  - D: 360px responsive — check.
+  - E: workflow + .gitignore.
+  - F: build, serve, screenshot at 1440 and 360, check console errors.
+  - Write T6-SUMMARY.md.
+
+  Let me check remaining components for heading order and a11y issues: KpiRow, FilterBar, QueryPanel, DeviceGrid, DeviceCard, ChartSection, ArchitecturePage, charts. Also check package.json for screenshot tooling (playwright? puppeteer?). Let me check what's available for screenshots.
+
+  Let me read the remaining components quickly in parallel.Now check the charts (ChartSection and table toggle buttons) for focus rings — global :focus-visible covers buttons, but Tailwind's preflight might reset outlines; the global CSS in index.css applies outline. Should be fine.
+
+  Check Section component for heading order (does Section render h2?). Let me check Section.tsx and ChartSection quickly, plus check package.json and whether playwright/puppeteer/chromium is available for screenshots.
+
+  Heading order: Dashboard h1 → FleetPulse h2, KpiRow no heading (dl with aria-label), FilterBar no heading (group), QueryPanel h2, devices h2, ChartSection? ArchitecturePage: h1 → constraint cards h2 (hmm, cards inside a section use h2 — that's a skipped-ish? h1 then h2 fine) → Section likely h2.
+
+  Let me check Section.tsx, ChartSection, and chart components' toggle buttons./usr/bin/google-chrome
+/usr/bin/google-chrome-stable
+vite
+/home/marketer7/.npm-global/lib
+├── @moonshot-ai/kimi-code@0.39.1
+├── @openai/codex@0.149.0
+└── @tencent-ai/codebuddy-code@2.154.0
+
+Google Chrome is available for headless screenshots. Good — no need to install anything.
+
+  Plan of edits:
+
+  1. **Favicon (A)**: Create `frontend/public/favicon.svg` — a tiny SVG fitting the product: a Fleet Pulse tick strip motif. E.g., dark rounded square bg (`#0a1013`) with 3-4 vertical ticks in status colors (green short, yellow mid, red full). Reference in index.html: `<link rel="icon" type="image/svg+xml" href="./favicon.svg" />`. Note: browsers that request /favicon.ico by default — with a proper `<link rel="icon">` Chrome won't request /favicon.ico. Good.
+
+  2. **Metadata (B)**: title default, meta description, theme-color `#0a1013`, OG tags (og:title, og:description, og:type, og:image? — og:image needs absolute URL; we don't know the Pages URL. Could use og:image relative? OG requires absolute URLs. I can skip og:image or use a placeholder. Better: include og:title, og:type, og:description without image, or include image with a comment. The task says "Open Graph tags so a shared link is not bare" — title/description/type suffice. I could add og:image pointing to favicon.svg but relative URLs are invalid for OG. I'll skip og:image to avoid a broken tag; actually maybe include it with site URL unknown... keep it simple: og:title, og:description, og:type, og:site_name. Also per-route title: small `useDocumentTitle` hook or just useEffect in each page. Practical approach: add a tiny effect in App.tsx keyed on location, or a hook in each page. I'll create `useDocumentTitle.ts` hook and call in both pages.
+
+     lang="en" already on <html>. Good.
+
+  3. **A11y (C)**:
+     - Skip-to-content link in AppShell: add `<a href="#main-content" className="sr-only focus:not-sr-only ...">Skip to content</a>` and `id="main-content"` + tabIndex={-1} on main.
+     - Focus rings: global :focus-visible already. But Tailwind preflight doesn't remove outlines; ok. Check chart table toggle buttons — they're buttons, fine.
+     - Heading order: Dashboard h1 → h2 sections — fine. DeviceDrawer h2 (inside dialog, fine). ArchitecturePage: h1 → constraint cards use h2 inside section headed by h1 — fine. Section h2 — fine. Check sub-components (AdrSection etc.) — they use Section presumably. Figcaptions are not headings, fine. OK.
+     - Reduced motion: index.css sets animation-duration 0.01ms/iteration 1 and transitions 0.01ms. animate-ping gets neutralized. Data still updates. Good. Maybe also `scroll-behavior` not used. Fine. But brief says pulse should "stop" — 0.01ms effectively does. I could strengthen: add `animation: none !important`? But tick-flash uses `animation-fill-mode: forwards` — with animation none, the flash rect would stay at opacity... default opacity 1 (fill rect full opacity). With `animation: none`, the flashing rect would remain visible at full opacity permanently? No — the element is removed after FLASH_MS (1500ms) by the timeout. Still, for 1.5s a bright overlay. Current CSS approach (0.01ms duration, 1 iteration, forwards) ends at opacity 0 quickly — better. Keep as-is.
+     - Also LiveFeedIndicator's animate-ping: neutralized by global CSS. Fine.
+     - No info by colour alone: StatusBadge everywhere; FleetPulse has legend + height encoding + tooltips. Charts: legend + direct labels. OK.
+
+  4. **Responsive (D)**: will verify via screenshot at 360px; check scrollWidth.
+
+  5. **Deploy (E)**: `.github/workflows/deploy.yml` at repo root; `.gitignore` at root. Verify vite base './' — confirmed.
+
+  6. **F**: build, serve dist (python3 http.server or vite preview), screenshot both routes at 1440 and 360 with headless chrome, capture console errors. For console errors, I can use chrome headless with --dump-dom? Console errors need CDP. Simpler: use a small Node script with chrome-remote-interface? Not installed. Alternative: use `--headless --disable-gpu --virtual-time-budget` and check server logs for 404s; for console errors use `--enable-logging --v=0`? Chrome headless writes console messages to stderr with `--enable-logging=stderr --v=1`? Actually `--headless=new --enable-logging=stderr` logs console messages as "CONSOLE(n)". Let me try that. Or write a tiny CDP client over websocket with node — no ws module. Could use Python websockets? May not be installed. Try `--enable-logging=stderr` first.
+
+     Note HashRouter: screenshot URL needs `/#/` and `/#/architecture`.
+
+  Let me set up a todo list and start implementing.
+
+  Edits to make:
+
+  **index.html**: add favicon link, meta description, theme-color, OG tags.
+
+  **frontend/public/favicon.svg**: design — 32x32, rounded rect bg #0a1013, ticks: baseline + ticks. E.g. ticks at x positions with heights: good short green, warning yellow, critical red full. Something like:
+  ```svg
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+    <rect width="32" height="32" rx="6" fill="#0a1013"/>
+    <rect x="6" y="24" width="20" height="1.5" rx="0.75" fill="#383835"/>
+    <rect x="7" y="20" width="3" height="4" fill="#0ca30c"/>
+    <rect x="12" y="14" width="3" height="10" fill="#fab219"/>
+    <rect x="17" y="6" width="3" height="18" fill="#d03b3b"/>
+    <rect x="22" y="17" width="3" height="7" fill="#3987e5"/>? 
+  ```
+  Hmm — series-1 blue isn't a status. Keep to status colors: good, warning, critical, offline stub. e.g. 5 ticks: green short, yellow low-mid, red full, orange mid, grey stub. Nice.
+
+  **useDocumentTitle hook** in src/ (or src/hooks). Create `frontend/src/hooks/useDocumentTitle.ts`? Keep simple: put in `src/useDocumentTitle.ts`. Pages call it: `useDocumentTitle('Fleet status')` → `document.title = 'Fleet status — Is3'`. Restore default on unmount.
+
+  **AppShell**: skip link + main id.
+
+  Skip link styling: needs to be visible on focus. Tailwind: `sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-3 focus:z-50 focus:rounded-md focus:bg-surface-2 focus:px-4 focus:py-2 focus:text-sm focus:text-text-primary`. not-sr-only is a Tailwind class (yes, `not-sr-only` exists). Also `focus:not-sr-only` works in Tailwind 3.4.
+
+  Then gitignore at root:
+  ```
+  node_modules/
+  dist/
+  *.tsbuildinfo
+  .DS_Store
+  .vscode/
+  .idea/
+  *.log
+  ```
+  Careful: `dist/` at root gitignore — frontend/dist yes. Also orchestration/logs? No, those should be committed presumably. Keep node_modules/, dist/ (any level), tsbuildinfo, editor cruft.
+
+  Workflow `.github/workflows/deploy.yml`:
+  ```yaml
+  name: Deploy to GitHub Pages
+
+  on:
+    push:
+      branches: [main]
+    workflow_dispatch:
+
+  permissions:
+    contents: read
+    pages: write
+    id-token: write
+
+  concurrency:
+    group: pages
+    cancel-in-progress: true
+
+  jobs:
+    build:
+      runs-on: ubuntu-latest
+      steps:
+        - uses: actions/checkout@v4
+        - uses: actions/setup-node@v4
+          with:
+            node-version: 20
+            cache: npm
+            cache-dependency-path: frontend/package-lock.json
+        - run: npm ci
+          working-directory: frontend
+        - run: npm run build
+          working-directory: frontend
+        - uses: actions/upload-pages-artifact@v3
+          with:
+            path: frontend/dist
+    deploy:
+      needs: build
+      runs-on: ubuntu-latest
+      environment:
+        name: github-pages
+        url: ${{ steps.deployment.outputs.page_url }}
+      steps:
+        - id: deployment
+          uses: actions/deploy-pages@v4
+  ```
+
+  Then build + screenshot.
+
+  Let me start. First todos.
+
+• The codebase is in good shape already (drawer focus trap, status badges, focus rings, reduced-motion CSS all exist). Now I'll implement the T6 deltas.
+
+• Create the favicon — a Fleet Pulse motif: baseline with severity ticks.Hmm, x=26 + width 3 = 29, within 32, but the baseline goes to 27. Fine visually. Actually the green tick at x=26 ends at 29, that's ok. But symmetric padding: ticks span 6–29, baseline 5–27. Slight asymmetry; let me adjust baseline to x=5 width=22 → ends at 27. Ticks end at 29. Make baseline x=5 width=24 ends 29. Minor; adjust for neatness.
+
+• Now the metadata in `index.html` (A's link + B):
+
+• Per-route titles: create a small hook and use in both pages. Also skip-to-content link in AppShell.
+
+• Now the per-route title hook and skip-to-content link:
+
+• Now the skip-to-content link in `AppShell`:
+
+• Now a11y audit remaining items. Check the chart components for the Chart/Table toggle buttons and any remaining issues — grep for heading levels in arch components to verify heading order, and check chart toggle buttons have focus ring (global CSS handles it). Let me grep for h3/h4 usage and check Sparkline toggle.
+
+• Now let me audit the remaining components for heading order and toggle buttons:
+
+• Heading order:
+  - Dashboard: h1 (Fleet status) → h2 Fleet pulse → h2 Queries → h2 Devices → h2 Charts → h3 ChartCard titles. Good, no skips.
+  - Architecture: h1 → h2 (constraint cards — these are h2 under an h1 section, fine) → Section h2 → h3 in AdrSection/RequirementsSection → h4. Good.
+  - Drawer: h2 → h3, it's a separate dialog. Fine.
+
+  Charts have toggles with aria-pressed, legends, aria-labels. Focus rings global.
+
+  One thing to verify: the focus ring is global `:focus-visible { outline: 2px solid var(--series-1) }` — but Tailwind preflight sets `outline: 2px solid transparent` on focus-visible? Actually Tailwind preflight in v3 sets `button:focus-visible { outline: ... }`? Tailwind v3 preflight includes:
+  ```
+  :-moz-focusring { outline: auto }
+  ```
+  and for buttons: `outline: 1px dotted`? No. Tailwind v3 preflight: `button, [role="button"] { cursor: pointer }`, and there's a rule `*:focus-visible`? I don't think preflight removes outlines. Default browser outlines would show anyway, and our CSS overrides with a branded ring. OK.
+
+  Also check ChartCard view toggle buttons have keyboard operability — they're <button> presumably with aria-pressed. Fine.
+
+  Now C remaining: verify drawer focus trap — code exists and looks correct. One subtle issue: `onKeyDown` uses capture on document and stopPropagation on Escape. Fine.
+
+  Now E: workflow + .gitignore.
+
+• Heading order is clean on both routes, charts have aria-pressed toggles and legends. Now the deploy config (E):
+
+• Update todos: A, B, C, E done (C pending verification via screenshots but the code work is done). Move to F: build.
+> is3-dashboard@0.1.0 build
+> tsc -b && vite build
+
+vite v5.4.21 building for production...
+transforming...
+✓ 73 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                                                        1.13 kB │ gzip:  0.54 kB
+dist/assets/ibm-plex-mono-latin-400-normal-CvHOgSBP.woff              13.14 kB
+dist/assets/ibm-plex-mono-latin-500-normal-CB9ihrfo.woff              13.16 kB
+dist/assets/ibm-plex-mono-latin-400-normal-DMJ8VG8y.woff2             14.71 kB
+dist/assets/ibm-plex-mono-latin-500-normal-DSY6xOcd.woff2             14.89 kB
+dist/assets/ibm-plex-sans-condensed-latin-600-normal-6XnkKYvF.woff    18.76 kB
+dist/assets/ibm-plex-sans-condensed-latin-600-normal-CRd5VyFf.woff2   19.82 kB
+dist/assets/ibm-plex-sans-latin-400-normal-CYLoc0-x.woff              22.10 kB
+dist/assets/ibm-plex-sans-latin-400-normal-CDDApCn2.woff2             22.59 kB
+dist/assets/ibm-plex-sans-latin-500-normal-BgVn5rGT.woff              23.92 kB
+dist/assets/ibm-plex-sans-latin-500-normal-6ng42L7E.woff2             24.18 kB
+dist/assets/index-C6Q97g8k.css                                        18.65 kB │ gzip:  4.63 kB
+dist/assets/index-CSEpzfax.js                                        245.57 kB │ gzip: 78.10 kB
+✓ built in 1.06s
+Build clean, zero TS errors. Verify favicon.svg landed in dist, then serve and screenshot.
+
+  Serve dist with python http.server in background. Then headless chrome screenshots at 1440x900 and 360x800 for `/#/` and `/#/architecture`, capturing console via --enable-logging=stderr.
+
+• Build is clean. Now serve `dist` and take the four screenshots with headless Chrome:assets
+favicon.svg
+index.html
+favicon.svg
+favicon.svg
+
+
+200 http://127.0.0.1:8734/
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- Fleet Pulse motif: one tick per device, height = severity, on the page plane. -->
+  <rect width="32" height="32" rx="6" fill="#0a1013"/>
+  <!-- baseline -->
+  <rect x="5" y="25" width="24" height="1.5" rx="0.75" fill="#383835"/>
+  <!-- ticks, worst first: critical full, serious mid, warning low, offline stub, good short -->
+  <rect x="6"  y="7"  width="3" height="18" rx="0.75" fill="#d03b3b"/>
+  <rect x="11" y="14" width="3" height="11" rx="0.75" fill="#ec835a"/>
+  <rect x="16" y="18" width="3" height="7"  rx="0.75" fill="#fab219"/>
+  <rect x="21" y="21" width="3" height="4"  rx="0.75" fill="#56605f"/>
+  <rect x="26" y="22" width="3" height="3"  rx="0.75" fill="#0ca30c"/>
+</svg>
+200 http://127.0.0.1:8734/favicon.svg
+• Server is up. Now screenshot with headless Chrome, capturing console errors via --enable-logging=stderr. Use virtual-time-budget to let the app render. Routes are hash-based: http://127.0.0.1:8734/#/ and /#/architecture.  (no console output)
+  (no console output)
+  (no console output)
+  (no console output)
+total 452
+drwxrwxr-x   2 marketer7 marketer7   4096 Sep 18 11:40 .
+drwxrwxrwt 242 root      root      110592 Sep 18 11:40 ..
+-rw-rw-r--   1 marketer7 marketer7 131548 Sep 18 11:40 arch-1440.png
+-rw-rw-r--   1 marketer7 marketer7  60102 Sep 18 11:40 arch-360.png
+-rw-rw-r--   1 marketer7 marketer7 105337 Sep 18 11:40 dash-1440.png
+-rw-rw-r--   1 marketer7 marketer7  39840 Sep 18 11:40 dash-360.png
+No console errors. But I should double check that "no console output" isn't a filtering artifact — grep filtered out bus/dbus noise. Let me also verify server access log for any 404s. Then view the screenshots.
+
+• No console output captured. Let me verify no 404s hit the server log, then inspect all four screenshots:127.0.0.1 - - [18/Sep/2026 11:40:03] "GET /assets/ibm-plex-sans-latin-500-normal-6ng42L7E.woff2 HTTP/1.1" 200 -
+127.0.0.1 - - [18/Sep/2026 11:40:03] "GET /assets/ibm-plex-mono-latin-500-normal-DSY6xOcd.woff2 HTTP/1.1" 200 -
+127.0.0.1 - - [18/Sep/2026 11:40:03] "GET /assets/ibm-plex-sans-latin-500-normal-6ng42L7E.woff2 HTTP/1.1" 200 -
+127.0.0.1 - - [18/Sep/2026 11:40:03] "GET /assets/ibm-plex-mono-latin-500-normal-DSY6xOcd.woff2 HTTP/1.1" 200 -
+127.0.0.1 - - [18/Sep/2026 11:40:04] "GET /assets/ibm-plex-sans-latin-500-normal-6ng42L7E.woff2 HTTP/1.1" 200 -
+127.0.0.1 - - [18/Sep/2026 11:40:05] "GET /assets/ibm-plex-sans-latin-500-normal-6ng42L7E.woff2 HTTP/1.1" 200 -
+
+
+• The grep for 404 matched lines with "500" in the byte-size column? No — the log lines matched because of "500" in the filename `latin-500-normal`. False positives. No actual 404s (all 200). Let me verify with a proper pattern.
+
+  The 360px dashboard screenshot shows horizontal overflow! The content is cut off at the right edge — "Showing..." truncated, "REPORTING 230 heard from rece..." cut, "Any stat..." select cut, Fleet Pulse legend "Goo..." cut. This suggests the page is wider than 360px — horizontal overflow. Wait, but hide-scrollbars hides them. The content appears clipped: the KPI grid `grid-cols-2` — the second column is cut off at right. The screenshot at 360 shows content extending beyond viewport → scrollWidth > 360.
+
+  Hmm, actually look more carefully: the header "Is3 Fleet Architecture" fits. "Fleet status" fits. But the fleet pulse description text extends past right edge, legend cut at "Goo(d)", KPI tiles cut. This means something forces a min width — likely the Fleet Pulse strip? No, it has overflow-hidden. Wait — the strip shows ticks all the way across... The KPI grid is `grid-cols-2 gap-3` — at 360px, each tile ~170px, should fit. But tiles look wider (~245px each, matching 1440 layout proportions?). 
+
+  Hold on — actually compare: dash-360 shows KPI tile "TOTAL DEVICES 240" at width ~245px of the 360 viewport. Two tiles side by side would be ~490px > 360. So the grid is rendering wider than viewport. Why? The page container `max-w-7xl mx-auto px-4` is fine. Something inside forces min-width... The Fleet Pulse svg has explicit width = visible.length * PITCH. With container overflow-hidden that shouldn't expand. Hmm, but `overflow-hidden` is on the same div that is a grid/flex child? The FleetPulse section is a block child of `div.space-y-6`, fine.
+
+  Wait, actually — maybe the issue is the meta viewport? Chrome headless with --window-size=360,780 — the page should be 360 CSS px wide. The screenshot is 360 wide and content is clipped, meaning document scrollWidth > 360.
+
+  What's the widest element? Possibly the FilterBar selects: `flex flex-wrap` so they wrap. The select "Any stat..." is cut at right edge — the selects didn't wrap? They show three across: Site, Kind, Status labels with selects below, cut at third. flex-wrap should wrap them... unless something prevents shrink. Selects have intrinsic min-width; flex-wrap wraps whole items, each label+select is a flex item ~100px, three fit in 360 roughly (100+100+100+gaps). Third one cut suggests container is wider than 360.
+
+  Key insight: maybe the whole page min-width is driven by the Fleet Pulse svg? No — overflow-hidden.
+
+  Wait, look again at KPI tiles: in dash-360, first tile spans x=17 to ~245? Actually "TOTAL DEVICES" tile spans roughly half? Hmm hard to tell. The right tile "REPORTING 230" is cut mid-text "heard from recei". If tiles were grid-cols-2 within a 360 container (328px content), each ~160px. The first tile looks ~230px wide. So the container is wider than viewport → horizontal scroll.
+
+  Let me measure scrollWidth via headless chrome dump. I can run chrome with --dump-dom and a script? Easier: use CDP via node? No puppeteer. Alternative: write a tiny page eval using chrome --headless --repl? Deprecated. 
+
+  Option: use `--dump-dom` won't give scrollWidth. I can add a temporary check via `google-chrome --headless=new --dump-dom` no.
+
+  Alternative: use Node with chrome-remote-interface? Not installed. Could pip install websocket-client? Or simpler: use Python + websockets? Check if python has websocket module. Or use chromedriver? Check.
+
+  Actually simpler diagnostic: temporarily inject a script? No — don't modify app for diagnostics... could use `--virtual-time-budget` with a `data:` URL? Hmm.
+
+  Simplest: python + selenium? Probably not installed. Let me check what's available: `pip list | grep -i selen` or playwright. Or just reason it out: find the overflowing element by inspecting likely culprits.
+
+  Candidates:
+  1. FleetPulse `<p className="mt-1.5 flex h-5 items-baseline justify-between gap-4">` — contains span truncate + "Showing N of M" shrink-0. Fine.
+  2. The legend `ul flex flex-wrap` fine.
+  3. Header: `flex justify-between` with LiveFeedIndicator; customer name hidden on <sm. "Is3 Fleet Architecture" + "Northgate Facilities" hidden at 360 (sm:inline hides it). Fine.
+  4. The svg width: visible.length * PITCH. If containerWidth measured via ResizeObserver... In headless with virtual-time-budget, ResizeObserver may report the pre-layout width? If containerWidth ended up bigger than actual (e.g. measured at default window before resize?), svg wider than container, but overflow-hidden clips it — doesn't cause page overflow.
+  5. KpiRow: `grid grid-cols-2 lg:grid-cols-4` — at 360, 2 cols. Tiles min content: "heard from recently" text-xs — fine.
+
+  Hmm wait — actually look again at the 360 screenshot: it's cut at right but ALSO everything looks proportionally like the 1440 layout just... no. The KPI tiles at 1440 are 4-across; at 360 they show 2-across (Total/Reporting row, then Needs attention/Offline row). That matches grid-cols-2. The tile widths look like ~227px each though. 227*2+12 gap + 32 padding = 498. So document is ~498 wide? Or the tile text is just clipped because tiles are ~160 and text "heard from recently" is clipped? "heard from recei" — the tile border would show. The second tile's right border isn't visible in the screenshot... The first tile "TOTAL DEVICES 240 registered" shows fully with right border around x=245? Looking at the image: tile 1 spans from ~17 to ~245? and tile 2 from ~257 to beyond 360. That's grid-cols-2 with each ~228px. So content width ~470px.
+
+  What forces 470px? Hmm: `max-w-7xl mx-auto` container is w-full so it should be 360. Unless an ancestor has min-width... `#root` default. Hmm.
+
+  OH WAIT. I bet it's the FilterBar selects: `flex flex-wrap items-end gap-3`. Selects can't shrink below content size but they wrap... they show inline across: Site (x~17-158), Kind (x~171-311), Status (x~322-cut). Each select ~140px wide. Three across = fits? 158+140+... they're NOT wrapping and total ~450+. flex-wrap wraps when items don't fit... but the labels show "Site Kind Status" on one line, selects one line. 17+140+12+140+12+140 = 461 > 328 → should have wrapped! Unless the parent flex container itself is wider than viewport (no width constraint broken). flex-wrap works based on container width; if the container is 328 it must wrap. So the container is wider than 328 → something else set page width ≥ 470.
+
+  What's ≥470px wide and not constrained? Maybe the FleetPulse strip `div` — `overflow-hidden` clips, but wait: does overflow-hidden establish min-width:auto override? For block elements no min-content issue. Block div with overflow hidden inside block parent — fine.
+
+  Hmm, what about the device name line under pulse: "Camera HQ-010 · Critical · last reported just now" + "Showing 68 of 240" — flex with truncate. fine.
+
+  Charts aren't visible in this screenshot (below fold) but could still force width! MetricLine/UptimeTimeline SVGs with fixed width? LinePlot svg width={width} where width might be a measured/fixed number like 600+. If a chart svg has fixed width inside a container WITHOUT overflow-hidden, the page widens. T5 verification said scrollWidth exactly 360 at mobile width though. But that was T5 — ChartSection is on dashboard, verified in T3/T4... T4 said screenshot verified. Hmm.
+
+  Wait — but maybe the issue is my screenshot: `--window-size=360,780` — Chrome headless=new window-size should set viewport to 360. But if there's horizontal overflow, screenshot captures only the left 360px, exactly what we see.
+
+  Let me diagnose properly with CDP. Check if python websocket-client or node ws available. Actually simplest: `google-chrome --headless=new --dump-dom` executes JS? No, dumps DOM. But I can use `--headless=new` with `--run-all-compositor-stages-before-draw` ... no eval.
+
+  Alternative: write a small node script using chrome's remote debugging via raw WebSocket... no ws lib. But Node 20+ has built-in WebSocket (global, stable in 22; in 20 it's behind flag... Node 21+ has stable WebSocket client; Node 20 has it experimental with --experimental-websocket? Actually global WebSocket landed in Node 21, backported? Node 20.10+? Hmm). Check node version.
+
+  Or pip: `python3 -c "import websocket"` check.
+
+  Let me first check node version and python modules.v20.19.6
+websocket-client ok
+Python websocket-client is available. Write a small CDP script: launch chrome with --remote-debugging-port, connect, navigate, evaluate document.scrollingElement.scrollWidth, and find offending elements (elements whose scrollWidth > innerWidth or rect right > innerWidth).Traceback (most recent call last):
+  File "/tmp/is3-cdp.py", line 27, in <module>
+    ws = websocket.create_connection(ws_url, timeout=30)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/marketer7/.local/lib/python3.12/site-packages/websocket/_core.py", line 664, in create_connection
+    websock.connect(url, **options)
+  File "/home/marketer7/.local/lib/python3.12/site-packages/websocket/_core.py", line 268, in connect
+    self.handshake_response = handshake(self.sock, url, *addrs, **options)
+                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/marketer7/.local/lib/python3.12/site-packages/websocket/_handshake.py", line 66, in handshake
+    status, resp = _get_resp_headers(sock)
+                   ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/marketer7/.local/lib/python3.12/site-packages/websocket/_handshake.py", line 158, in _get_resp_headers
+    raise WebSocketBadStatusException(
+websocket._exceptions.WebSocketBadStatusException: Handshake status 403 Forbidden -+-+- {'content-length': '239', 'content-type': 'text/html'} -+-+- b'Rejected an incoming WebSocket connection from the http://127.0.0.1:9223 origin. Use the command line flag --remote-allow-origins=http://127.0.0.1:9223 to allow connections from this origin or --remote-allow-origins=* to allow all origins.'
+{
+ "innerWidth": 500,
+ "scrollWidth": 485,
+ "title": "Fleet status — Is3",
+ "overflow": []
+}
+CONSOLE: clean
+innerWidth is 500, not 360 — because Chrome enforces a minimum window width (~500px) even in headless when using --window-size? Interesting: headless=new has a minimum window width of 500? Actually headless chrome minimum width is dictated... The earlier screenshot with --window-size=360,780 produced a 360-wide PNG though. But via remote debugging the viewport came out 500.
+
+  Hmm wait — the screenshot PNG was 360x780. But this CDP run reports innerWidth 500. The difference: in this run I passed --window-size but Chrome clamps minimum window width to 500 in headless=new? But the screenshot was exactly 360 wide... Then why did the 360 screenshot show clipped content?
+
+  Ohh — maybe in the screenshot run, window was 360 and page scrollWidth was ~485-500, causing the clipped view. And in the CDP run the window got clamped to 500 so no overflow shows. So the page's min content width is ~485! scrollWidth 485 at innerWidth 500, no overflow — meaning content needs ~485px minimum.
+
+  So something forces min-width ~485. Need to find it. Let me use CDP with Emulation.setDeviceMetricsOverride to force 360 width, then find overflowing elements.{
+ "innerWidth": 360,
+ "scrollWidth": 345,
+ "title": "Fleet status — Is3",
+ "overflow": []
+}
+CONSOLE: clean
+Now innerWidth 360, scrollWidth 345, no overflow?! So the dashboard at 360 doesn't overflow when measured after full render. The earlier clipped screenshot must be a rendering artifact of `--window-size=360,780` + `--virtual-time-budget` — possibly the ResizeObserver hadn't fired or fonts not loaded... Actually wait: virtual-time-budget fast-forwards; the screenshot showed content clipped at right, consistent with a ~470px-wide layout. But CDP now says scrollWidth 345 < 360. 
+
+  Difference: virtual-time-budget mode. With virtual time, the layout might have been captured before ResizeObserver set containerWidth, and the svg width... no, that wouldn't widen the page.
+
+  Hmm, wait. Look at the dash-360 screenshot again: the pulse strip shows ticks across the full width and beyond (green ticks run to the right edge and appear cut). KPI tiles 2-up at ~228px each. If scrollWidth were 345, tiles would be ~160px each. In the screenshot they're ~228px. 2*228+12+32 = 500. So during the screenshot the page was laid out at ~500px wide and clipped to 360? That matches Chrome's minimum window width of 500: headless `--window-size=360,780` clamps the actual window to 500 wide, but the screenshot surface is cropped to 360?? Actually known behavior: headless chrome enforces minimum window size 500x... no wait, screenshots at 360 wide worked and showed clipped content.
+
+  Actually known issue: old headless clamps window width to minimum 500? There IS a minimum content size for headful. For headless=new, window-size should be honored... but the CDP run showed innerWidth=500 with --window-size=360,780! That confirms: Chrome clamped the window to 500 min width, and the screenshot (360x780) captured just the top-left 360x780 of the 500-wide layout. So the "clipping" is a screenshot artifact, not a page defect.
+
+  So to screenshot at 360 properly, I should use CDP with deviceMetricsOverride + Page.captureScreenshot. Let me extend the script to capture screenshots with the emulated viewport. That gives true 360px rendering.
+
+  Also arch page: check with CDP at 360 too (scrollWidth). And capture all four screenshots via CDP: 1440x900 and 360x780 (emulated).
+
+  Let me rewrite the script to also screenshot, and run for both routes/widths.{"innerWidth":1440,"scrollWidth":1440,"title":"Fleet status — Is3","overflow":[]}
+CONSOLE: clean
+{"innerWidth":360,"scrollWidth":360,"title":"Fleet status — Is3","overflow":[]}
+CONSOLE: clean
+{"innerWidth":1440,"scrollWidth":1440,"title":"Architecture — Is3","overflow":[]}
+CONSOLE: clean
+{"innerWidth":360,"scrollWidth":360,"title":"Architecture — Is3","overflow":["TABLE.w-full min-w-[34rem] text-left text-sm right=561","THEAD.border-b border-border bg-surface-2 right=561","TR. right=561","TH.px-3 py-2 text-xs font-medium text-text-muted right=488","TH.px-3 py-2 text-xs font-medium text-text-muted right=561","TBODY.divide-y divide-border right=561","TR. right=561","TD.px-3 py-1.5 text-text-secondary right=488","TD.px-3 py-1.5 right=561","SPAN.inline-block rounded border px-1.5 py-0.5 text-[11px] font-m right=539","TR. right=561","TD.px-3 py-1.5 text-text-secondary right=488"]}
+CONSOLE: clean
+At 360px on the architecture page: scrollWidth == innerWidth == 360 (good — page doesn't scroll horizontally), but a TABLE with `min-w-[34rem]` extends to 561 inside a deliberately scrolling frame. The task says "Nothing may overflow horizontally except diagram frames that scroll deliberately." Is this table inside a scrollable container (overflow-x-auto)? scrollWidth is 360, so the table must be inside an overflow-x-auto container — meaning it scrolls deliberately. Need to confirm the wrapper has overflow-x-auto. Which component? Likely TechStackSection table. Let me check. If it's wrapped in overflow-x-auto, that satisfies "scrolls deliberately" — though the requirement mentions diagram frames. A data table with deliberate horizontal scroll is acceptable responsive practice, but strictly the requirement says "except diagram frames". Hmm. Let me look at the table wrapper.All wide tables and diagram frames are wrapped in `overflow-x-auto` containers — they scroll deliberately, and document scrollWidth is 360. That satisfies the requirement ("except diagram frames that scroll deliberately" — the same deliberate-scroll treatment applies to wide tables, which is standard responsive practice; the page itself has zero horizontal overflow).
+
+  Now view the four CDP screenshots to confirm rendering, focus ring can't be seen in a static screenshot (I'll verify focus visibility manually via code: global :focus-visible outline; could also do a CDP check that focuses elements and reads outline style). Let me look at the screenshots.
+
+• All wide elements sit inside `overflow-x-auto` frames that scroll deliberately, and the document itself never exceeds 360. Now let me view the four screenshots:
+
+• The 360px dashboard now renders correctly: no clipping, KPI tiles 2-up fit, legend wraps, "Showing 62 of 240 devices" truncation note appears, filters wrap. 1440 looks right too.
+
+  Now check arch screenshots.
+
+• Dashboard looks right at both widths — the 360 layout wraps cleanly with the "Showing 62 of 240 devices" note. Now the architecture route:
+
+• Both routes render correctly at both widths. Console clean everywhere, titles per route work ("Fleet status — Is3", "Architecture — Is3").
+
+  Remaining verifications:
+  1. Focus ring actually visible — the CSS exists. I can verify via CDP: focus an element and read computed outline. Let me do a quick CDP check that tabs through and verifies document.activeElement gets a non-none outline on :focus-visible. Actually a simpler static check: the CSS rule exists. But "confirm" — let me do one CDP probe: focus the skip link, check it's visible (not sr-only anymore) and has outline.
+
+  2. Verify skip link works: Tab order first stop.
+
+  3. Reduced motion: the CSS media query exists. Could emulate via CDP Emulation.setEmulatedMedia features prefers-reduced-motion and check the ping element's animation-duration is 0.01ms. Good to verify.
+
+  Let me write a quick CDP probe for these, then also test the drawer focus trap quickly? That was pre-existing and verified in T3. The task asks to "verify the drawer traps focus... and restores focus". I can script: click a device card, check document.activeElement is inside dialog, press Tab at last element wraps, close with Escape, focus returns to the card. That's a solid automated check. Let me write one more CDP script.
+
+  Also verify favicon request returns 200 (done — server log showed favicon.svg 200; no /favicon.ico 404 since Chrome uses the SVG link; server log had no 404 at all).
+
+  Let me write the a11y probe script.SKIP LINK: {"focusedVisible":false,"outline":"none 0px","activatesMain":true}
+FOCUS RINGS: {
+ "nav link": "NO RING (none 0px)",
+ "fleet pulse strip": "NOT FOUND: [role=\"listbox\"][aria-activedescendant]",
+ "filter select": "NOT FOUND: select",
+ "query option": "NOT FOUND: #queries-heading ~ ul button",
+ "device card": "NOT FOUND: #devices-heading ~ div button",
+ "chart toggle": "NOT FOUND: [role=\"group\"][aria-label*=\"choose\"] button"
+}
+REDUCED MOTION: {'message': "Failed to execute 'getComputedStyle' on 'Window': parameter 1 is not of type 'Element'."}
+DRAWER: no card
+Multiple issues with the probe:
+
+  1. "NOT FOUND: select" etc. — the dashboard page probably didn't render? But nav link was found. Wait — `document.querySelector('select')` returned null? That's odd. Maybe the navigate+sleep raced and we're on about:blank still? But nav a found and skip link found... Actually the skip link exists in AppShell. If only the shell rendered but not the page... HashRouter with `about:blank` — no. Hmm, maybe `Page.navigate` then `time.sleep(3)` but evaluate runs in a different context? Or selectors wrong: `#queries-heading ~ ul` — QueryPanel structure: `<section><h2 id="queries-heading"/><ul .../></section>` — h2's sibling ul: `#queries-heading ~ ul button` should work. `#devices-heading ~ div` — in DashboardPage, h2 then `<div className="mt-2">` inside a flex div... wait structure: `<div className="flex ..."><h2/><p/></div><div className="mt-2">` — h2's parent is the flex div, so `#devices-heading ~ div` selects siblings of h2 inside the flex div — the sibling is `<p>`, not div. So no match. My selector bug.
+
+  But `select` should exist on the dashboard! Unless... the page rendered is not the dashboard. "nav link" found. Fleet pulse listbox not found — aria-activedescendant may be undefined when active is null... I required the attribute in selector. active = visible[0] should exist... aria-activedescendant rendered only if active truthy. Should be there.
+
+  Hmm — maybe React hadn't rendered yet at evaluate time because the page load... but sleep(3) after navigate. Wait, `send()` for Page.navigate consumes messages until matching id — fine.
+
+  Actually maybe the app crashed? REDUCED MOTION error: getComputedStyle(null) — `btn = document.querySelector('select')` null. So selects truly absent. And skip link "activatesMain: true" — main#content exists. So the shell + main rendered, but dashboard content missing?! Odd — but screenshot runs showed full dashboard at 1440. Difference: this script doesn't await Page.loadEventFired... shouldn't matter with sleep 3.
+
+  Oh wait — I see it. In this script's `js()` I pass `awaitPromise: True`. The SKIP LINK js uses `link.click()` — clicking the anchor navigates to #main-content... which with HashRouter changes the hash to `#main-content`! React Router interprets location hash... HashRouter uses `window.location.hash` as the route path! Clicking `href="#main-content"` sets hash to `#main-content`, HashRouter sees path "main-content" → no route matches → Routes render nothing! That's why all dashboard content disappeared!
+
+  THAT'S A REAL BUG — the skip link breaks the HashRouter app. Classic conflict. Fix: instead of href="#main-content", use a button-like anchor with onClick that focuses main without changing the hash: `onClick={(e) => { e.preventDefault(); document.getElementById('main-content')?.focus(); ... scrollIntoView }}`. Keep href="#main-content" for semantics but preventDefault.
+
+  Wait, does it actually break? After click, hash = "#main-content", HashRouter parses path from hash — "#/…" vs "#main-content": HashRouter's createHashHistory does `pathname = hashPath.charAt(0) === '/' ? hashPath : '/' + hashPath`... Actually it strips the leading '#': path = "/main-content"? Hmm, createHashHistory: `const hashIndex = href.indexOf('#'); return hashIndex === -1 ? '' : href.substring(hashIndex + 1)`. Then it parses that as path. "#main-content" → path "main-content" — warning "relative path" maybe, renders no match → blank content area. Yes, real bug. Good catch via the probe!
+
+  2. focus ring reported "none 0px" for nav link — because el.focus() via script doesn't trigger :focus-visible (heuristic: programmatic focus may or may not apply focus-visible; when focus() called without keyboard, browsers apply :focus but NOT :focus-visible unless previous interaction was keyboard). So my probe can't measure it this way. Better: dispatch real key Tab via Input.dispatchKeyEvent, or check that the CSS rule exists. Simpler: emulate keyboard with CDP Input domain — press Tab and check. Or set a temporary check: use `:focus` selector? The ring style only applies on :focus-visible. With CDP Input.dispatchKeyEvent (real key events), focus-visible applies. Let me use Input.dispatchKeyEvent for Tab.
+
+  3. Reduced-motion probe crashed due to null select (cascade of bug 1).
+
+  4. Drawer: no card (cascade of bug 1).
+
+  Also note SKIP LINK focusedVisible false — because sr-only wasn't removed? `focus:not-sr-only` requires :focus, which el.focus() gives. But computed position... not-sr-only sets position:static etc. The check I wrote was weird. After fixing the bug, re-probe with real Tab keys.
+
+  Fix the skip link first.Now fix the probe: use real keyboard input via Input.dispatchKeyEvent so :focus-visible applies, fix selectors, and don't click the skip link (or do — now safe). Rebuild first, then re-run.
+
+  For keyboard Tab: Input.dispatchKeyEvent type rawKeyDown/keyUp with key 'Tab', code 'Tab', windowsVirtualKeyCode 9. Focus moves on keydown.
+
+  Rewrite probe script sections:
+  - press Tab once → activeElement should be skip link, check computed style (visible, outline solid since :focus-visible).
+  - press Enter on it (key event) → main focused.
+  - continue Tabbing through nav etc., sampling outline at each of several stops.
+  - reduced motion: re-check with proper null guards.
+  - drawer: fix selector to `#devices-heading` then closest section querySelector('ul li button').
+
+  Simpler: write a fresh probe script.
+
+• Rebuilding with the fix, then re-probing with real keyboard events (so `:focus-visible` actually applies):dist/assets/index-C6Q97g8k.css                                        18.65 kB │ gzip:  4.63 kB
+dist/assets/index-BviA4eNR.js                                        245.70 kB │ gzip: 78.14 kB
+✓ built in 1.06s
+
+
+• Wait — the server serves dist directly; rebuild replaced files, fine (same server, python http.server reads from disk per request).
+
+  Now write the improved probe with real key events.TAB 1 (skip link): {"tag":"A","label":"Skip to content","outline":"solid 2px rgb(57, 135, 229)","visible":true}
+AFTER ENTER: main-content
+TAB TRAIL:
+  stop 2: {"tag":"DIV","label":"Fleet pulse. One tick per device. Use ar","outline":"solid 2px rgb(57, 135, 229)","visible":true}
+  stop 3: {"tag":"SELECT","label":"All sitesNorthgate TowerHarbour QuayDepo","outline":"solid 2px rgb(57, 135, 229)","visible":true}
+  stop 4: {"tag":"SELECT","label":"All kindsCameraSwitchFridgeThermostatInt","outline":"solid 2px rgb(57, 135, 229)","visible":true}
+  stop 5: {"tag":"SELECT","label":"Any statusGoodWarningSeriousCriticalOffl","outline":"solid 2px rgb(57, 135, 229)","visible":true}
+  stop 6: {"tag":"BUTTON","label":"Silent over 15 minutes10Devices that sto","outline":"solid 2px rgb(57, 135, 229)","visible":true}
+  stop 7: {"tag":"BUTTON","label":"Fridges above safe temperature1Fridges w","outline":"solid 2px rgb(57, 135, 229)","visible":true}
+  stop 8: {"tag":"BUTTON","label":"Critical at Northgate Tower3Devices repo","outline":"solid 2px rgb(57, 135, 229)","visible":true}
+  stop 9: {"tag":"BUTTON","label":"Cameras with degraded bitrate7Cameras st","outline":"solid 2px rgb(57, 135, 229)","visible":true}
+  stop 10: {"tag":"BUTTON","label":"Recovered in the last hour5Devices that ","outline":"solid 2px rgb(57, 135, 229)","visible":true}
+  stop 11: {"tag":"BUTTON","label":"Intercoms with weak signal4Intercoms rep","outline":"solid 2px rgb(57, 135, 229)","visible":true}
+  stop 12: {"tag":"BUTTON","label":"Switches near their rated load2Switches ","outline":"solid 2px rgb(57, 135, 229)","visible":true}
+  stop 13: {"tag":"BUTTON","label":"Thermostats off target3Thermostats more ","outline":"solid 2px rgb(57, 135, 229)","visible":true}
+REDUCED MOTION: {"ping":"1e-05s x1","selectTransition":"1e-05s"}
+DRAWER: card focused: true
+  open: NOT OPEN
+  focus stayed trapped over 6 tabs: False
+  shift+tab stays trapped: Uncaught
+  after Esc: {"closed":true,"focusRestored":false}
+Great progress:
+  - Skip link: first Tab stop, visible, solid 2px ring, Enter focuses main-content. ✓
+  - Tab trail: every stop shows a solid 2px ring. ✓ (stops 2–13 all solid 2px)
+  - Reduced motion: ping animation 1e-05s x1, transitions 1e-05s → neutralized; data layer unaffected (feed updates are state, not animation). ✓
+
+  Drawer didn't open via Enter key on the card. Why? The card is a <button>; Enter on a focused button fires click — but my synthetic `Input.dispatchKeyEvent` Enter: rawKeyDown doesn't generate a click. For buttons, the click on Enter is triggered by keydown (for Enter it's keydown; for Space it's keyup). But CDP rawKeyDown might not produce the default "click" behavior — need type "keyDown" (with text?) Actually for synthesized key events to trigger default actions, use `Input.dispatchKeyEvent` with type "keyDown"? The docs: "rawKeyDown" doesn't generate text; default actions like button activation should still happen with keyDown/rawKeyDown? For a button, Enter activation happens on keydown default action — synthesized events via CDP are "trusted" so they should trigger. Hmm, but maybe because I focused via JS `card.focus()` — :focus-visible irrelevant.
+
+  Wait — maybe Enter did fire click but drawer opened and closed instantly? "closed: true, focusRestored: false". Let me debug: click the card via JS directly instead (card.click()), which definitely triggers React onClick. The goal is verifying the drawer trap, not Enter synthesis. But real users use Enter... In a real browser, Enter on a button fires click — that's browser behavior, reliable. The synthesis issue is my probe's. Let me use card.click() via JS, then verify trap with real Tab keys, then Escape via real key (Escape keydown has no default action issue — React handler listens for keydown; my Input.dispatchKeyEvent rawKeyDown produces a real keydown that reaches the document capture listener).
+
+  Also Escape: with rawKeyDown the listener should fire. Earlier "closed: true" but drawer never opened. Let me fix the probe to open via JS click.  stop 12: {"tag":"BUTTON","label":"Switches near their rated load2Switches ","outline":"solid 2px rgb(57, 135, 229)","visible":true}
+  stop 13: {"tag":"BUTTON","label":"Thermostats off target3Thermostats more ","outline":"solid 2px rgb(57, 135, 229)","visible":true}
+REDUCED MOTION: {"ping":"1e-05s x1","selectTransition":"1e-05s"}
+DRAWER: card focused: true
+  open: open, focus inside: true on BUTTON
+  focus stayed trapped over 6 tabs: True
+  shift+tab stays trapped: True
+  after Esc: {"closed":true,"focusRestored":true}
+Drawer verified: opens with focus inside (on the close button), Tab and Shift+Tab stay trapped, Esc closes, focus restored to the triggering card.
+
+  Remaining:
+  - Keyboard traversal across the architecture page + chart toggles: the tab trail covered dashboard stops up to 13; chart toggles are buttons (ring verified for buttons globally). Architecture page is mostly static; nav links verified. Good enough — but the task says "every chart table toggle" — the toggle buttons are native buttons with the global ring. The probe verified BUTTON rings. Fine.
+  - Re-run the four screenshots post-skip-link-fix (build changed JS bundle). The layout didn't change visually but re-verify console clean on final build, including favicon. Let me re-run the CDP screenshot runs for all four.
+  - Then check arch page keyboard? skip.
+  - Confirm server log has no 404 (favicon.ico). Chrome with SVG favicon link won't request /favicon.ico. Server log check after runs.
+  - Also confirm vite base './' — already read: yes.
+  - Write T6-SUMMARY.md.
+  - Kill the server afterwards.{"innerWidth":1440,"scrollWidth":1440,"title":"Fleet status — Is3","overflow":[]}
+CONSOLE: clean
+{"innerWidth":360,"scrollWidth":360,"title":"Fleet status — Is3","overflow":[]}
+CONSOLE: clean
+{"innerWidth":1440,"scrollWidth":1440,"title":"Architecture — Is3","overflow":[]}
+CONSOLE: clean
+{"innerWidth":360,"scrollWidth":360,"title":"Architecture — Is3","overflow":["TABLE.w-full min-w-[34rem] text-left text-sm right=561","THEAD.border-b border-border bg-surface-2 right=561","TR. right=561","TH.px-3 py-2 text-xs font-medium text-text-muted right=488","TH.px-3 py-2 text-xs font-medium text-text-muted right=561","TBODY.divide-y divide-border right=561","TR. right=561","TD.px-3 py-1.5 text-text-secondary right=488","TD.px-3 py-1.5 right=561","SPAN.inline-block rounded border px-1.5 py-0.5 text-[11px] font-m right=539","TR. right=561","TD.px-3 py-1.5 text-text-secondary right=488"]}
+CONSOLE: clean
+0
+zero 404s in server log
+All clean. The arch-360 "overflow" entries are the requirements table inside its overflow-x-auto frame (document scrollWidth = 360, so it scrolls deliberately — allowed). Zero 404s.
+
+  View final screenshots to eyeball them (dashboard 360 changed due to skip link — invisible until focus, so should be identical, but verify).Both 360 screenshots are clean, no clipping, no overflow. All verification done. Kill the server, write the summary, update todos.
+
+  Capture the exact build output for the summary — I have it from the run above (the final build). Let me grab the full final build output again for the summary to be exact. I ran it earlier; the tail was shown. For exactness, re-run build once more and capture full output.
+
+  Actually I have the full output from the first build in this session. The second build I only tailed. For the summary "exact build output", re-run and capture.
+
+• All four screenshots verified. Cleaning up the server and capturing the exact final build output for the summary:
+> is3-dashboard@0.1.0 build
+> tsc -b && vite build
+
+vite v5.4.21 building for production...
+transforming...
+✓ 73 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                                                        1.13 kB │ gzip:  0.54 kB
+dist/assets/ibm-plex-mono-latin-400-normal-CvHOgSBP.woff              13.14 kB
+dist/assets/ibm-plex-mono-latin-500-normal-CB9ihrfo.woff              13.16 kB
+dist/assets/ibm-plex-mono-latin-400-normal-DMJ8VG8y.woff2             14.71 kB
+dist/assets/ibm-plex-mono-latin-500-normal-DSY6xOcd.woff2             14.89 kB
+dist/assets/ibm-plex-sans-condensed-latin-600-normal-6XnkKYvF.woff    18.76 kB
+dist/assets/ibm-plex-sans-condensed-latin-600-normal-CRd5VyFf.woff2   19.82 kB
+dist/assets/ibm-plex-sans-latin-400-normal-CYLoc0-x.woff              22.10 kB
+dist/assets/ibm-plex-sans-latin-400-normal-CDDApCn2.woff2             22.59 kB
+dist/assets/ibm-plex-sans-latin-500-normal-BgVn5rGT.woff              23.92 kB
+dist/assets/ibm-plex-sans-latin-500-normal-6ng42L7E.woff2             24.18 kB
+dist/assets/index-C6Q97g8k.css                                        18.65 kB │ gzip:  4.63 kB
+dist/assets/index-BviA4eNR.js                                        245.70 kB │ gzip: 78.14 kB
+✓ built in 1.07s
+
+
+• T6 is complete. Summary of what was done:
+
+  **A — Favicon defect fixed.** New `frontend/public/favicon.svg`: a 32×32 Fleet Pulse motif (five severity-height ticks on a baseline, token hexes only), linked from `index.html` with a relative href so it resolves under a Pages subpath. Server log across eight page loads: zero 404s.
+
+  **B — Metadata.** `index.html` now has the default title, meta description, `theme-color: #0a1013`, and OG title/description/type/site_name/image (`lang="en"` was already there). Per-route titles via new `src/useDocumentTitle.ts` — verified live: `Fleet status — Is3` and `Architecture — Is3`.
+
+  **C — Accessibility.** The big find: the skip-to-content link I added initially used a bare `href="#main-content"`, which **HashRouter intercepted as a route and blanked the page**. Caught by the keyboard probe, fixed by preventDefault + explicit focus/scroll. Verified over CDP with real key events:
+  - Every one of 13+ Tab stops shows the 2px `--series-1` focus ring
+  - Drawer traps Tab and Shift+Tab, closes on Esc, restores focus to the opening card
+  - Heading order is clean h1→h2→h3(→h4) on both routes
+  - Reduced motion neutralises the ping and all transitions (`1e-05s × 1`) while the feed keeps updating
+  - Colour never carries meaning alone (icon + label + colour, plus height/opacity on the Pulse)
+
+  **D — 360px.** One caveat worth knowing: Chrome headless clamps `--window-size` to a 500px minimum, so plain `--screenshot` at 360 produces a misleading clipped image. I switched to CDP device-metrics emulation: both routes measure `scrollWidth` exactly 360 with zero page-level overflow; only the wide tables/diagrams scroll deliberately inside their `overflow-x-auto` frames.
+
+  **E — Deploy config.** `.github/workflows/deploy.yml` at the repo root (push to main + workflow_dispatch, correct permissions block, concurrency group, Node 20, `npm ci` + build in `frontend/`, upload-pages-artifact → deploy-pages), plus a root `.gitignore`. `base: './'` confirmed intact. No git operations performed.
+
+  **F — Final verification.** `npm run build` exits 0, zero TS errors/warnings (73 modules, ~78 kB gzip JS). All four screenshots reviewed; console clean everywhere.
+
+  Full write-up, including the a11y probe results and exact build output, is in `orchestration/logs/T6-SUMMARY.md`.
+
+To resume this session: kimi -r session_f882284c-8a25-4ed5-ba4a-2036cfa2268f
